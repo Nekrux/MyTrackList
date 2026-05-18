@@ -65,7 +65,7 @@ export default function Auth() {
         <div className="auth-switch">
           {mode === 'login'
             ? <>Non hai un account? <button onClick={() => setMode('signup')}>Registrati</button></>
-            : <>Hai già un account? <button onClick={() => setMode('login')}>Accedi</button>}
+            : <>Hai già un account? <button onClick={() => setMode('login')}>Accedi</button></>}
         </div>
       </div>
     </div>
