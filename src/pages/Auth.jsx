@@ -3,16 +3,17 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 
 export default function Auth() {
-  const [mode, setMode]       = useState('login')   // 'login' | 'signup'
+  const [mode, setMode]       = useState('login')
   const [email, setEmail]     = useState('')
   const [pass,  setPass]      = useState('')
   const [error, setError]     = useState('')
+  const [info,  setInfo]      = useState('')
   const [loading, setLoading] = useState(false)
   const navigate = useNavigate()
 
   const submit = async (e) => {
     e.preventDefault()
-    setError('')
+    setError(''); setInfo('')
     setLoading(true)
     try {
       let result
@@ -23,7 +24,7 @@ export default function Auth() {
       }
       if (result.error) throw result.error
       if (mode === 'signup') {
-        setError('Controlla la tua email per confermare l\'account, poi accedi.')
+        setInfo('Account creato! Accedi con le tue credenziali.')
         setMode('login')
       } else {
         navigate('/')
@@ -38,55 +39,33 @@ export default function Auth() {
   return (
     <div className="auth-wrap">
       <div className="auth-card">
-        <div className="auth-logo">TVTRACK</div>
+        <div className="auth-logo">MyTrackList</div>
         <div className="auth-sub">Traccia serie TV, anime e cartoni</div>
 
         {error && <div className="error-msg" style={{ marginBottom: 16 }}>{error}</div>}
+        {info  && <div className="success-msg" style={{ marginBottom: 16 }}>{info}</div>}
 
         <form className="auth-form" onSubmit={submit}>
           <div>
             <div className="label">Email</div>
-            <input
-              className="input"
-              type="email"
-              placeholder="la@tua.email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              required
-              autoComplete="email"
-            />
+            <input className="input" type="email" placeholder="la@tua.email"
+              value={email} onChange={e => setEmail(e.target.value)} required autoComplete="email" />
           </div>
           <div>
             <div className="label">Password</div>
-            <input
-              className="input"
-              type="password"
-              placeholder="••••••••"
-              value={pass}
-              onChange={e => setPass(e.target.value)}
-              required
-              minLength={6}
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-            />
+            <input className="input" type="password" placeholder="••••••••"
+              value={pass} onChange={e => setPass(e.target.value)} required minLength={6}
+              autoComplete={mode === 'login' ? 'current-password' : 'new-password'} />
           </div>
-          <button
-            className="btn btn-primary"
-            type="submit"
-            disabled={loading}
-            style={{ marginTop: 4 }}
-          >
-            {loading
-              ? 'Attendere...'
-              : mode === 'login' ? 'Accedi' : 'Registrati'
-            }
+          <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 4 }}>
+            {loading ? 'Attendere...' : mode === 'login' ? 'Accedi' : 'Registrati'}
           </button>
         </form>
 
         <div className="auth-switch">
           {mode === 'login'
             ? <>Non hai un account? <button onClick={() => setMode('signup')}>Registrati</button></>
-            : <>Hai già un account? <button onClick={() => setMode('login')}>Accedi</button></>
-          }
+            : <>Hai già un account? <button onClick={() => setMode('login')}>Accedi</button>}
         </div>
       </div>
     </div>

@@ -18,35 +18,31 @@ const LibraryIcon = () => (
     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
   </svg>
 )
-const StatsIcon = () => (
+const ProfileIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
-    <line x1="18" y1="20" x2="18" y2="10"/>
-    <line x1="12" y1="20" x2="12" y2="4"/>
-    <line x1="6"  y1="20" x2="6"  y2="14"/>
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+    <circle cx="12" cy="7" r="4"/>
   </svg>
 )
 
 const NAV = [
-  { to: '/',       label: 'Home',     Icon: HomeIcon,    end: true },
-  { to: '/search', label: 'Cerca',    Icon: SearchIcon,  end: false },
-  { to: '/library',label: 'Libreria', Icon: LibraryIcon, end: false },
-  { to: '/stats',  label: 'Stats',    Icon: StatsIcon,   end: false },
+  { to: '/',        label: 'Home',     Icon: HomeIcon,    end: true },
+  { to: '/search',  label: 'Cerca',    Icon: SearchIcon,  end: false },
+  { to: '/library', label: 'Libreria', Icon: LibraryIcon, end: false },
+  { to: '/profile', label: 'Profilo',  Icon: ProfileIcon, end: false },
 ]
 
 export default function Layout() {
   return (
     <>
-      <main>
-        <Outlet />
-      </main>
+      <main><Outlet /></main>
       <nav className="bottom-nav">
         {NAV.map(({ to, label, Icon, end }) => (
           <NavLink
             key={to} to={to} end={end}
             className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
           >
-            <Icon />
-            <span>{label}</span>
+            <Icon /><span>{label}</span>
           </NavLink>
         ))}
       </nav>
