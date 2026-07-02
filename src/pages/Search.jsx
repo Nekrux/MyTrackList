@@ -1,18 +1,8 @@
 import { useState, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { searchShows, imgUrl, airYear, GENRES_IT } from '../lib/tmdb'
+import { searchShows, imgUrl, airYear, MAIN_GENRES } from '../lib/tmdb'
 
 const MAIN_GENRES = [
-  { id:18,    label:'Dramma' },
-  { id:35,    label:'Commedia' },
-  { id:80,    label:'Crime' },
-  { id:10765, label:'Sci-Fi/Fantasy' },
-  { id:9648,  label:'Mistero' },
-  { id:10759, label:'Azione' },
-  { id:16,    label:'Animazione' },
-  { id:10751, label:'Famiglia' },
-  { id:37,    label:'Western' },
-  { id:99,    label:'Documentario' },
 ]
 
 export default function Search() {
