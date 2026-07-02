@@ -11,22 +11,39 @@ const get = async (path, params = {}) => {
   return r.json()
 }
 
-export const searchShows    = (q, page=1)    => get('/search/tv', { query:q, page })
-export const getShowDetails = (id)           => get(`/tv/${id}`, { append_to_response:'credits' })
-export const getSeason      = (id, s)        => get(`/tv/${id}/season/${s}`)
-export const getTrending    = ()             => get('/trending/tv/week')
-export const getGenres      = ()             => get('/genre/tv/list')
-export const discoverByGenre= (gid, page=1)  => get('/discover/tv', { with_genres:gid, page })
+export const searchShows    = (q, page=1)   => get('/search/tv', { query:q, page })
+export const getShowDetails = (id)          => get(`/tv/${id}`, { append_to_response:'credits,aggregate_credits' })
+export const getSeason      = (id, s)       => get(`/tv/${id}/season/${s}`, { append_to_response:'credits' })
+export const getEpCredits   = (id, s, e)    => get(`/tv/${id}/season/${s}/episode/${e}/credits`)
+export const getTrending    = ()            => get('/trending/tv/week')
 
-export const imgUrl = (path, size='w342') =>
+export const imgUrl  = (path, size='w342') =>
   path ? `https://image.tmdb.org/t/p/${size}${path}` : null
 
 export const airYear = (d) => d ? new Date(d).getFullYear() : null
 
-export const GENRES_IT = {
-  10759: 'Azione/Avventura', 16: 'Animazione', 35: 'Commedia',
-  80: 'Crime', 99: 'Documentario', 18: 'Dramma',
-  10751: 'Famiglia', 10762: 'Per bambini', 9648: 'Mistero',
-  10763: 'Notizie', 10764: 'Reality', 10765: 'Sci-Fi/Fantasy',
-  10766: 'Soap', 10767: 'Talk', 10768: 'Guerra/Politica', 37: 'Western'
+// Generi TMDB in italiano (come li restituisce l'API con language=it-IT)
+export const GENRE_MAP = {
+  10759: 'Azione & Avventura',
+  16:    'Animazione',
+  35:    'Commedia',
+  80:    'Crime',
+  99:    'Documentario',
+  18:    'Dramma',
+  10751: 'Famiglia',
+  10762: 'Per Bambini',
+  9648:  'Mistero',
+  10763: 'Notizie',
+  10764: 'Reality',
+  10765: 'Sci-Fi & Fantasy',
+  10766: 'Soap',
+  10767: 'Talk',
+  10768: 'Guerra & Politica',
+  37:    'Western',
 }
+
+// Generi principali mostrati nei filtri (corrispondono ai nomi TMDB it-IT)
+export const MAIN_GENRES = [
+  'Dramma','Commedia','Crime','Sci-Fi & Fantasy','Mistero',
+  'Azione & Avventura','Animazione','Famiglia','Western','Documentario',
+]
