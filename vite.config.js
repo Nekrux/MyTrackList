@@ -7,10 +7,9 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.png', 'icon-512.png'],
       manifest: {
         name: 'MyTrackList',
-        short_name: 'MyTrackList',
+        short_name: 'MTL',
         description: 'Traccia serie TV, anime e cartoni',
         theme_color: '#1e1e2e',
         background_color: '#1e1e2e',

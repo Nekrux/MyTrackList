@@ -1,10 +1,10 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-const AuthContext = createContext({})
+const Ctx = createContext({})
 
 export function AuthProvider({ children }) {
-  const [user, setUser]       = useState(null)
+  const [user,    setUser]    = useState(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -18,13 +18,11 @@ export function AuthProvider({ children }) {
     return () => subscription.unsubscribe()
   }, [])
 
-  const signOut = () => supabase.auth.signOut()
-
   return (
-    <AuthContext.Provider value={{ user, loading, signOut }}>
+    <Ctx.Provider value={{ user, loading, signOut: () => supabase.auth.signOut() }}>
       {children}
-    </AuthContext.Provider>
+    </Ctx.Provider>
   )
 }
 
-export const useAuth = () => useContext(AuthContext)
+export const useAuth = () => useContext(Ctx)

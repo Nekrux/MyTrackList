@@ -8,6 +8,8 @@ import Library       from './pages/Library'
 import ShowDetail    from './pages/ShowDetail'
 import Profile       from './pages/Profile'
 import PublicProfile from './pages/PublicProfile'
+import Lists         from './pages/Lists'
+import ImportTV      from './pages/ImportTV'
 
 function Guard({ children }) {
   const { user, loading } = useAuth()
@@ -20,14 +22,16 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          <Route path="/auth"       element={<Auth />} />
+          <Route path="/auth"        element={<Auth />} />
           <Route path="/u/:username" element={<PublicProfile />} />
           <Route path="/" element={<Guard><Layout /></Guard>}>
-            <Route index              element={<Home />} />
-            <Route path="search"      element={<Search />} />
-            <Route path="library"     element={<Library />} />
-            <Route path="show/:id"    element={<ShowDetail />} />
-            <Route path="profile"     element={<Profile />} />
+            <Route index               element={<Home />} />
+            <Route path="search"       element={<Search />} />
+            <Route path="library"      element={<Library />} />
+            <Route path="show/:id"     element={<ShowDetail />} />
+            <Route path="profile"      element={<Profile />} />
+            <Route path="lists"        element={<Lists />} />
+            <Route path="import"       element={<ImportTV />} />
           </Route>
         </Routes>
       </BrowserRouter>
