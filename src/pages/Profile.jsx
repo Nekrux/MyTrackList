@@ -72,19 +72,52 @@ export default function Profile() {
     const ratings = (dets||[]).map(d=>d.rating).filter(Boolean)
     const avgRating = ratings.length ? (ratings.reduce((a,b)=>a+b,0)/ratings.length).toFixed(1) : null
 
-    // Rating distribution for bar chart (1-5 stars)
-    const ratingDist = [1,2,3,4,5].map(n=>({ name:`${n}★`, value:(dets||[]).filter(d=>d.rating===n).length }))
+    // Rating distribution (1-5 stelle episodi)
+    const ratingDist = [1,2,3,4,5].map(n=>({ name:`${'★'.repeat(n)}`, value:(dets||[]).filter(d=>d.rating===n).length }))
+
+    // Voti serie (1-10)
+    const showRatingDist = [1,2,3,4,5,6,7,8,9,10].map(n=>({ name:`${n}`, value:shows.filter(s=>s.rating===n).length }))
 
     // Pie data by type
     const typePie = Object.entries(byType).map(([k,v])=>({ name:{tv:'Serie TV',anime:'Anime',cartoon:'Cartoni'}[k]||k, value:v }))
 
+    // Generi — parsea il campo genres (JSON array) di ogni show
+    const genreCount = {}
+    shows.forEach(s => {
+      try {
+        const gs = JSON.parse(s.genres||'[]')
+        gs.forEach(g => { genreCount[g]=(genreCount[g]||0)+1 })
+      } catch {}
+    })
+    const topGenres = Object.entries(genreCount).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>({ name:k, value:v }))
+
     // Top platforms
     const platCount = {}; (dets||[]).forEach(d=>{ if(d.platform){ platCount[d.platform]=(platCount[d.platform]||0)+1 } })
-    const topPlats  = Object.entries(platCount).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([k,v])=>({ name:k, value:v }))
+    const topPlats  = Object.entries(platCount).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v])=>({ name:k, value:v }))
+
+    // Top emotions
+    const emoCount = {}
+    ;(dets||[]).forEach(d=>{
+      try { JSON.parse(d.emotions||'[]').forEach(e=>{ emoCount[e]=(emoCount[e]||0)+1 }) } catch {}
+    })
+    const topEmotions = Object.entries(emoCount).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([k,v])=>({ name:k, value:v }))
+
+    // Episodi per mese (ultimi 12 mesi)
+    const monthCount = {}
+    ;(eps||[]).forEach(e=>{
+      const d = new Date(e.watched_at)
+      const key = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`
+      monthCount[key]=(monthCount[key]||0)+1
+    })
+    const epsByMonth = Object.entries(monthCount).sort().slice(-12).map(([k,v])=>({ name:k.slice(5), value:v }))
 
     const topRated = [...shows].filter(s=>s.rating).sort((a,b)=>b.rating-a.rating).slice(0,5)
 
-    setStats({ totalMin, totalHours:Math.round(totalMin/60), totalDays:Math.round(totalMin/60/24), total:shows.length, byStatus, byType, thisMonth, avgRating, ratingDist, typePie, topPlats, topRated })
+    setStats({
+      totalMin, totalHours:Math.round(totalMin/60), totalDays:Math.round(totalMin/60/24),
+      total:shows.length, byStatus, byType, thisMonth, avgRating,
+      ratingDist, showRatingDist, typePie, topGenres, topPlats, topEmotions, epsByMonth, topRated
+    })
   }
 
   const saveProfile = async () => {
@@ -232,6 +265,7 @@ export default function Profile() {
       {/* ── STATISTICHE TAB ── */}
       {tab==='Statistiche' && stats && (
         <>
+          {/* Numeri chiave */}
           <div className="stat-grid">
             <div className="stat-card"><div className="stat-val">{stats.totalHours.toLocaleString()}</div><div className="stat-label">Ore guardate</div></div>
             <div className="stat-card"><div className="stat-val">{stats.totalDays}</div><div className="stat-label">Giorni di visione</div></div>
@@ -241,20 +275,36 @@ export default function Profile() {
           {stats.avgRating && (
             <div className="stat-card" style={{ marginBottom:16 }}>
               <div className="stat-val">{(parseFloat(stats.avgRating)*2).toFixed(1)}<span style={{ fontSize:'1rem',color:'var(--muted)' }}>/10</span></div>
-              <div className="stat-label">Voto medio episodi</div>
+              <div className="stat-label">Voto medio episodi (scala 10)</div>
             </div>
           )}
 
-          {/* Pie chart types */}
+          {/* Episodi per mese */}
+          {stats.epsByMonth?.length>1 && (
+            <div style={{ marginBottom:20 }}>
+              <div className="label" style={{ marginBottom:8 }}>Episodi per mese</div>
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={stats.epsByMonth} margin={{ top:0,right:0,bottom:0,left:-20 }}>
+                  <XAxis dataKey="name" tick={{ fill:'var(--muted)',fontSize:10 }} />
+                  <YAxis tick={{ fill:'var(--muted)',fontSize:10 }} />
+                  <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
+                  <Bar dataKey="value" fill="var(--sapphire)" radius={0} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Tipologia — torta */}
           {stats.typePie?.length>0 && (
             <div style={{ marginBottom:20 }}>
               <div className="label" style={{ marginBottom:8 }}>Per tipologia</div>
               <div style={{ display:'flex',alignItems:'center',gap:16 }}>
-                <ResponsiveContainer width="50%" height={140}>
+                <ResponsiveContainer width="50%" height={130}>
                   <PieChart>
-                    <Pie data={stats.typePie} dataKey="value" cx="50%" cy="50%" outerRadius={60}>
+                    <Pie data={stats.typePie} dataKey="value" cx="50%" cy="50%" outerRadius={55}>
                       {stats.typePie.map((_,i)=><Cell key={i} fill={PIE_COLORS[i%PIE_COLORS.length]} />)}
                     </Pie>
+                    <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
                   </PieChart>
                 </ResponsiveContainer>
                 <div style={{ display:'flex',flexDirection:'column',gap:6 }}>
@@ -269,14 +319,14 @@ export default function Profile() {
             </div>
           )}
 
-          {/* Bar chart ratings */}
-          {stats.ratingDist?.some(d=>d.value>0) && (
+          {/* Generi top */}
+          {stats.topGenres?.length>0 && (
             <div style={{ marginBottom:20 }}>
-              <div className="label" style={{ marginBottom:8 }}>Distribuzione voti episodi</div>
-              <ResponsiveContainer width="100%" height={120}>
-                <BarChart data={stats.ratingDist} margin={{ top:0,right:0,bottom:0,left:-20 }}>
-                  <XAxis dataKey="name" tick={{ fill:'var(--muted)',fontSize:11 }} />
-                  <YAxis tick={{ fill:'var(--muted)',fontSize:11 }} />
+              <div className="label" style={{ marginBottom:8 }}>Generi più visti</div>
+              <ResponsiveContainer width="100%" height={Math.max(100, stats.topGenres.length*28)}>
+                <BarChart data={stats.topGenres} layout="vertical" margin={{ top:0,right:16,bottom:0,left:90 }}>
+                  <XAxis type="number" tick={{ fill:'var(--muted)',fontSize:10 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fill:'var(--dim)',fontSize:11 }} width={90} />
                   <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
                   <Bar dataKey="value" fill="var(--mauve)" radius={0} />
                 </BarChart>
@@ -284,16 +334,61 @@ export default function Profile() {
             </div>
           )}
 
-          {/* Top platforms */}
+          {/* Voti serie (1-10) */}
+          {stats.showRatingDist?.some(d=>d.value>0) && (
+            <div style={{ marginBottom:20 }}>
+              <div className="label" style={{ marginBottom:8 }}>Voti serie (1–10)</div>
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={stats.showRatingDist} margin={{ top:0,right:0,bottom:0,left:-20 }}>
+                  <XAxis dataKey="name" tick={{ fill:'var(--muted)',fontSize:11 }} />
+                  <YAxis tick={{ fill:'var(--muted)',fontSize:11 }} />
+                  <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
+                  <Bar dataKey="value" fill="var(--gold)" radius={0} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Voti episodi (1-5 stelle) */}
+          {stats.ratingDist?.some(d=>d.value>0) && (
+            <div style={{ marginBottom:20 }}>
+              <div className="label" style={{ marginBottom:8 }}>Voti episodi (1–5 ★)</div>
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={stats.ratingDist} margin={{ top:0,right:0,bottom:0,left:-20 }}>
+                  <XAxis dataKey="name" tick={{ fill:'var(--muted)',fontSize:13 }} />
+                  <YAxis tick={{ fill:'var(--muted)',fontSize:11 }} />
+                  <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
+                  <Bar dataKey="value" fill="var(--yellow)" radius={0} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Emozioni */}
+          {stats.topEmotions?.length>0 && (
+            <div style={{ marginBottom:20 }}>
+              <div className="label" style={{ marginBottom:8 }}>Emozioni più usate</div>
+              <div style={{ display:'flex',flexWrap:'wrap',gap:8 }}>
+                {stats.topEmotions.map(({name,value})=>(
+                  <div key={name} style={{ background:'var(--surface0)',border:'1px solid var(--surface1)',padding:'8px 12px',display:'flex',flexDirection:'column',alignItems:'center',gap:2,minWidth:54 }}>
+                    <span style={{ fontSize:22 }}>{name}</span>
+                    <span style={{ fontSize:11,color:'var(--muted)' }}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Top piattaforme */}
           {stats.topPlats?.length>0 && (
             <div style={{ marginBottom:20 }}>
-              <div className="label" style={{ marginBottom:8 }}>Top piattaforme</div>
-              <ResponsiveContainer width="100%" height={120}>
-                <BarChart data={stats.topPlats} layout="vertical" margin={{ top:0,right:0,bottom:0,left:60 }}>
-                  <XAxis type="number" tick={{ fill:'var(--muted)',fontSize:11 }} />
-                  <YAxis type="category" dataKey="name" tick={{ fill:'var(--dim)',fontSize:11 }} width={60} />
+              <div className="label" style={{ marginBottom:8 }}>Piattaforme</div>
+              <ResponsiveContainer width="100%" height={Math.max(80, stats.topPlats.length*26)}>
+                <BarChart data={stats.topPlats} layout="vertical" margin={{ top:0,right:16,bottom:0,left:80 }}>
+                  <XAxis type="number" tick={{ fill:'var(--muted)',fontSize:10 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fill:'var(--dim)',fontSize:11 }} width={80} />
                   <Tooltip contentStyle={{ background:'var(--mantle)',border:'1px solid var(--surface1)',borderRadius:0,fontSize:12 }} />
-                  <Bar dataKey="value" fill="var(--sapphire)" radius={0} />
+                  <Bar dataKey="value" fill="var(--teal)" radius={0} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

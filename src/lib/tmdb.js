@@ -11,39 +11,29 @@ const get = async (path, params = {}) => {
   return r.json()
 }
 
-export const searchShows    = (q, page=1)   => get('/search/tv', { query:q, page })
-export const getShowDetails = (id)          => get(`/tv/${id}`, { append_to_response:'credits,aggregate_credits' })
-export const getSeason      = (id, s)       => get(`/tv/${id}/season/${s}`, { append_to_response:'credits' })
-export const getEpCredits   = (id, s, e)    => get(`/tv/${id}/season/${s}/episode/${e}/credits`)
-export const getTrending    = ()            => get('/trending/tv/week')
+export const searchShows    = (q, page=1)      => get('/search/tv', { query:q, page })
+export const getShowDetails = (id)             => get(`/tv/${id}`, { append_to_response:'credits,aggregate_credits' })
+export const getSeason      = (id, s)          => get(`/tv/${id}/season/${s}`)
+export const getEpCredits   = (id, s, e)       => get(`/tv/${id}/season/${s}/episode/${e}/credits`)
+export const getTrending    = ()               => get('/trending/tv/week')
+export const discoverByGenre= (genreId, page=1)=> get('/discover/tv', { with_genres:genreId, sort_by:'popularity.desc', page })
 
 export const imgUrl  = (path, size='w342') =>
   path ? `https://image.tmdb.org/t/p/${size}${path}` : null
-
 export const airYear = (d) => d ? new Date(d).getFullYear() : null
 
-// Generi TMDB in italiano (come li restituisce l'API con language=it-IT)
-export const GENRE_MAP = {
-  10759: 'Azione & Avventura',
-  16:    'Animazione',
-  35:    'Commedia',
-  80:    'Crime',
-  99:    'Documentario',
-  18:    'Dramma',
-  10751: 'Famiglia',
-  10762: 'Per Bambini',
-  9648:  'Mistero',
-  10763: 'Notizie',
-  10764: 'Reality',
-  10765: 'Sci-Fi & Fantasy',
-  10766: 'Soap',
-  10767: 'Talk',
-  10768: 'Guerra & Politica',
-  37:    'Western',
-}
-
-// Generi principali mostrati nei filtri (corrispondono ai nomi TMDB it-IT)
+// Generi TMDB con ID — i nomi corrispondono a quelli restituiti dall'API it-IT
 export const MAIN_GENRES = [
-  'Dramma','Commedia','Crime','Sci-Fi & Fantasy','Mistero',
-  'Azione & Avventura','Animazione','Famiglia','Western','Documentario',
+  { id:18,    label:'Dramma' },
+  { id:35,    label:'Commedia' },
+  { id:80,    label:'Crime' },
+  { id:10765, label:'Sci-Fi & Fantasy' },
+  { id:9648,  label:'Mistero' },
+  { id:10759, label:'Azione & Avventura' },
+  { id:16,    label:'Animazione' },
+  { id:10751, label:'Famiglia' },
+  { id:37,    label:'Western' },
+  { id:99,    label:'Documentario' },
+  { id:10762, label:'Per Bambini' },
+  { id:10768, label:'Guerra & Politica' },
 ]

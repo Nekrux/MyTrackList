@@ -399,8 +399,8 @@ export default function ShowDetail() {
 
   return (
     <div className="page" style={{ paddingTop:0 }}>
-      {backdrop && <div className="backdrop" style={{ height:220 }}><img src={backdrop} alt="" /></div>}
-      <div style={{ marginTop:backdrop?-44:16 }}>
+      {backdrop && <div className="backdrop"><img src={backdrop} alt="" /></div>}
+      <div style={{ marginTop:12 }}>
         <div className="detail-header">
           {poster && <img src={poster} alt={show.name} className="detail-poster" style={{ height:135 }} />}
           <div style={{ flex:1,minWidth:0 }}>
