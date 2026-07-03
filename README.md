@@ -1,56 +1,104 @@
-# MyTrackList
+# TVTrack
 
-Web app personale per il tracking di serie TV, anime e cartoni. PWA installabile su Android.
-
-## Come mettere online l'app (senza scrivere codice)
-
-### 1. Crea il database su Supabase
-1. Vai su [supabase.com](https://supabase.com) e crea un account/progetto gratuito.
-2. Nel progetto, apri **SQL Editor** (menu a sinistra).
-3. Apri il file `schema.sql` incluso in questa cartella, copia tutto il contenuto e incollalo nell'SQL Editor.
-4. Premi **Run**. Dovresti vedere "Success" — questo crea tutte le tabelle necessarie.
-5. Vai su **Authentication → Providers → Email** e disattiva **"Confirm email"** (così potrai accedere subito senza dover confermare l'email).
-6. Vai su **Project Settings → API**: ti servono l'**URL** del progetto e la chiave **anon public**.
-
-### 2. Prendi una API key gratuita da TMDB
-1. Registrati su [themoviedb.org](https://www.themoviedb.org).
-2. Vai su Impostazioni → API e richiedi una API key (v3 auth).
-
-### 3. Carica il progetto su GitHub
-1. Crea un account su [github.com](https://github.com) se non lo hai già.
-2. Crea un nuovo repository (es. "mytracklist").
-3. Trascina **tutti i file e le cartelle** di questo progetto nella pagina di GitHub per caricarli (drag & drop).
-4. **Non caricare il file `.env`** se lo crei — solo `.env.example`. Le chiavi vere vanno inserite su Cloudflare (punto 4).
-
-### 4. Collega il progetto a Cloudflare Pages
-1. Vai su [pages.cloudflare.com](https://pages.cloudflare.com) e crea un account gratuito.
-2. Crea un nuovo progetto → **Connect to Git** → seleziona il repository GitHub appena creato.
-3. Impostazioni di build:
-   - **Build command:** `npm run build`
-   - **Build output directory:** `dist`
-4. Prima di avviare il deploy, vai su **Settings → Environment variables** e aggiungi:
-   - `VITE_SUPABASE_URL` = l'URL del tuo progetto Supabase
-   - `VITE_SUPABASE_ANON_KEY` = la chiave anon public di Supabase
-   - `VITE_TMDB_API_KEY` = la tua API key di TMDB
-5. Avvia il deploy. Dopo qualche minuto la tua app sarà online su un indirizzo tipo `mytracklist.pages.dev`.
-
-### 5. Installa l'app su Android
-Apri il link dell'app con Chrome su Android → menu (⋮) → **"Installa app"** (o "Aggiungi a schermata Home").
+App personale per il tracking di serie TV, anime e cartoni.  
+PWA installabile su Android, con sync cloud tramite Supabase.
 
 ---
 
-## Sviluppo in locale (opzionale, solo se vuoi modificare il codice)
+## Stack
 
+| Layer    | Tecnologia |
+|----------|-----------|
+| Frontend | React 18 + Vite + React Router |
+| Dati show | TMDB API (gratuita) |
+| Backend/Auth | Supabase (gratuito) |
+| Hosting | Vercel (gratuito) |
+
+---
+
+## Setup — 5 passaggi
+
+### 1. TMDB API Key
+1. Vai su https://www.themoviedb.org e crea un account gratuito
+2. Vai in *Impostazioni → API* e richiedi una chiave (scegli "Developer")
+3. Copia la **API Key (v3 auth)**
+
+### 2. Supabase
+1. Crea un account gratuito su https://supabase.com
+2. Crea un nuovo progetto
+3. Vai in *SQL Editor* e incolla l'intero contenuto di `supabase-schema.sql`, poi clicca *Run*
+4. Vai in *Project Settings → API* e copia:
+   - **Project URL**
+   - **anon public key**
+5. (Facoltativo ma consigliato) In *Authentication → Email Templates*, personalizza le email
+
+### 3. Configura le variabili d'ambiente
+```bash
+cp .env.example .env
+```
+Apri `.env` e compila i tre valori con quelli copiati sopra.
+
+### 4. Installa e testa in locale
 ```bash
 npm install
-cp .env.example .env   # poi inserisci le tue chiavi nel file .env
 npm run dev
 ```
+Apri http://localhost:5173 nel browser.
+
+### 5. Deploy su Vercel
+1. Crea un account gratuito su https://vercel.com
+2. Importa il progetto da GitHub (o usa `vercel` CLI)
+3. In *Project Settings → Environment Variables*, aggiungi le stesse 3 variabili di `.env`
+4. Deploy fatto! Vercel ti darà un URL HTTPS (necessario per la PWA)
+
+### Installare come app su Android
+1. Apri l'URL di Vercel in Chrome su Android
+2. Menu (⋮) → *Aggiungi a schermata Home*
+3. Conferma — si installa come app nativa
+
+---
 
 ## Struttura del progetto
 
-- `schema.sql` — schema del database Supabase (tabelle + sicurezza a livello di riga)
-- `src/pages/` — le pagine dell'app (Home, Cerca, Libreria, Liste, Profilo, ecc.)
-- `src/components/` — componenti riutilizzabili (card serie, sheet episodio, grafici statistiche, ecc.)
-- `src/lib/` — client Supabase e TMDB, funzioni statistiche
-- `src/index.css` — stile globale (tema Catppuccin Mocha Mauve, angoli squadrati, oro come accento)
+```
+src/
+├── lib/
+│   ├── supabase.js      # Client Supabase
+│   └── tmdb.js          # Helper TMDB API
+├── contexts/
+│   └── AuthContext.jsx  # Gestione autenticazione
+├── components/
+│   ├── Layout.jsx       # Nav bottom + outlet
+│   └── ShowCard.jsx     # Card serie in lista
+├── pages/
+│   ├── Auth.jsx         # Login / Registrazione
+│   ├── Home.jsx         # Dashboard + Trending
+│   ├── Search.jsx       # Ricerca TMDB
+│   ├── Library.jsx      # Libreria per stato
+│   ├── ShowDetail.jsx   # Dettaglio + episodi + note
+│   └── Stats.jsx        # Statistiche personali
+└── index.css            # Design system completo
+```
+
+---
+
+## Funzionalità
+
+- 🔍 **Ricerca** serie TV, anime e cartoni via TMDB
+- 📺 **Tracking episodi** — marca episodi singoli o intera stagione con un tap
+- 📚 **Libreria** per stato: In corso / Da vedere / Completate / In pausa / Abbandonate
+- 🏷️ **Tipo** personalizzato per ogni serie (TV / Anime / Cartone)
+- ⭐ **Voto** da 1 a 10
+- 📝 **Note personali** per ogni serie
+- 📊 **Statistiche** — ore totali, giorni, episodi questo mese, top rated
+- 🔄 **Sync** multi-dispositivo tramite Supabase
+- 📱 **PWA** — installabile su Android come app nativa
+- 🌐 **Italiano** — UI e risultati TMDB in italiano
+
+---
+
+## Note tecniche
+
+- I dati TMDB (titolo, poster, episodi) vengono cachati su Supabase al momento dell'aggiunta, per ridurre le chiamate API
+- La RLS (Row Level Security) di Supabase garantisce che ogni utente veda solo i propri dati
+- Il piano gratuito Supabase (500 MB DB + 2 GB bandwidth) è più che sufficiente per uso personale
