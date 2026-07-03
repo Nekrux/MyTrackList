@@ -181,11 +181,24 @@ create policy "shows_select_public" on user_shows
 create policy "episodes_all_own" on user_episodes
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
+-- Lettura pubblica aggiuntiva: serve per calcolare le ore totali nel profilo pubblico
+create policy "episodes_select_public" on user_episodes
+  for select using (
+    exists (select 1 from user_profiles p where p.id = user_episodes.user_id and p.is_public = true)
+  );
+
 create policy "episode_details_all_own" on episode_details
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 
 create policy "season_tracking_all_own" on season_tracking
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- Lettura pubblica aggiuntiva: serve per calcolare correttamente le ore totali
+-- (con moltiplicatore rewatch) nelle statistiche del profilo pubblico
+create policy "season_tracking_select_public" on season_tracking
+  for select using (
+    exists (select 1 from user_profiles p where p.id = season_tracking.user_id and p.is_public = true)
+  );
 
 -- user_favorites: leggibile pubblicamente (serve per i profili pubblici), scrivibile solo dal proprietario
 create policy "favorites_select_all" on user_favorites

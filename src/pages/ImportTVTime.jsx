@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import Papa from 'papaparse'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { searchTv } from '../lib/tmdb'
 
 function normalizeStatus(raw) {
@@ -20,6 +21,7 @@ function findColumn(fields, candidates) {
 
 export default function ImportTVTime() {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const fileInputRef = useRef(null)
   const [rows, setRows] = useState(null)
   const [columns, setColumns] = useState(null)
@@ -38,14 +40,14 @@ export default function ImportTVTime() {
         const statusCol = findColumn(fields, ['status'])
         const ratingCol = findColumn(fields, ['rating', 'score', 'vote'])
         if (!titleCol) {
-          alert('Non riesco a trovare una colonna con il nome della serie nel CSV.')
+          showToast('Non riesco a trovare una colonna con il nome della serie nel CSV.', 'error')
           return
         }
         setColumns({ titleCol, statusCol, ratingCol })
         setRows(res.data.filter(r => r[titleCol]?.trim()))
         setResults(null)
       },
-      error: () => alert('Errore nella lettura del file CSV.')
+      error: () => showToast('Errore nella lettura del file CSV.', 'error')
     })
   }
 

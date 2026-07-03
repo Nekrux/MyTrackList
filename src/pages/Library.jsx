@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { STATUSES, MEDIA_TYPES } from '../lib/tmdb'
 import ShowCard from '../components/ShowCard'
 import Spinner from '../components/Spinner'
@@ -13,6 +14,7 @@ const GENRES = [
 
 export default function Library() {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const [shows, setShows] = useState([])
   const [episodeCounts, setEpisodeCounts] = useState({})
   const [favorites, setFavorites] = useState(new Set())
@@ -59,7 +61,7 @@ export default function Library() {
       setFavorites(prev => { const s = new Set(prev); s.delete(show.tmdb_id); return s })
     } else {
       if (favorites.size >= 6) {
-        alert('Puoi avere al massimo 6 serie preferite. Rimuovine una dal profilo prima di aggiungerne un\'altra.')
+        showToast('Puoi avere al massimo 6 serie preferite. Rimuovine una dal profilo prima di aggiungerne un\'altra.', 'info')
         return
       }
       await supabase.from('user_favorites').insert({

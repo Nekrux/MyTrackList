@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { posterUrl } from '../lib/tmdb'
 import Spinner from '../components/Spinner'
 
 export default function ListDetail() {
   const { id } = useParams()
   const { user } = useAuth()
+  const { showToast } = useToast()
   const navigate = useNavigate()
   const [allLists, setAllLists] = useState([])
   const [list, setList] = useState(null)
@@ -15,6 +17,7 @@ export default function ListDetail() {
   const [librarySearch, setLibrarySearch] = useState('')
   const [libraryShows, setLibraryShows] = useState([])
   const [loading, setLoading] = useState(true)
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -47,8 +50,9 @@ export default function ListDetail() {
   }
 
   async function deleteList() {
-    if (!confirm(`Eliminare la lista "${list.name}"? Questa azione non può essere annullata.`)) return
-    await supabase.from('user_lists').delete().eq('id', id)
+    if (!confirmingDelete) { setConfirmingDelete(true); return }
+    const { error } = await supabase.from('user_lists').delete().eq('id', id)
+    if (error) { showToast('Errore nell\'eliminazione della lista.', 'error'); return }
     navigate('/liste')
   }
 
@@ -72,8 +76,15 @@ export default function ListDetail() {
           <h1 style={{ fontSize: 26 }}>{list.name}</h1>
           {list.description && <p style={{ fontSize: 13, color: 'var(--subtext)', marginTop: 4 }}>{list.description}</p>}
         </div>
-        <button className="btn danger" onClick={deleteList}>Elimina</button>
+        <button className="btn danger" onClick={deleteList}>
+          {confirmingDelete ? 'Conferma eliminazione' : 'Elimina'}
+        </button>
       </div>
+      {confirmingDelete && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <button className="btn secondary" onClick={() => setConfirmingDelete(false)} style={{ fontSize: 12 }}>Annulla</button>
+        </div>
+      )}
 
       <div className="field" style={{ marginTop: 20 }}>
         <label>Aggiungi dalla tua libreria</label>

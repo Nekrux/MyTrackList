@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { PLATFORMS, DEVICES, STATUSES, MEDIA_TYPES, formatRuntime } from '../lib/tmdb'
 import StarRating from './StarRating'
 import CastPicker from './CastPicker'
 
 export default function ShowSheet({ tmdbShow, existing, onClose, onSaved }) {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const [status, setStatus] = useState(existing?.status || 'planned')
   const [mediaType, setMediaType] = useState(existing?.media_type || 'tv')
   const [rating, setRating] = useState(existing?.rating || 0)
@@ -56,10 +58,11 @@ export default function ShowSheet({ tmdbShow, existing, onClose, onSaved }) {
         .single()
       if (error) throw error
       onSaved(data)
+      showToast(existing ? 'Serie aggiornata' : 'Serie aggiunta alla libreria', 'success')
       onClose()
     } catch (err) {
-      console.error(err)
-      alert('Errore nel salvataggio della serie. Riprova.')
+      console.error('Errore salvataggio serie:', err)
+      showToast(err?.message ? `Errore nel salvataggio: ${err.message}` : 'Errore nel salvataggio della serie. Riprova.', 'error')
     } finally {
       setSaving(false)
     }

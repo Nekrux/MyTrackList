@@ -52,8 +52,15 @@ export default function Home() {
 
   return (
     <div className="page">
-      <div className="eyebrow">MyTrackList</div>
-      <h1 style={{ fontSize: 30, marginBottom: 20 }}>Home</h1>
+      <div style={{ marginBottom: 28 }}>
+        <h1 style={{ fontSize: 52, lineHeight: 0.92, letterSpacing: '0.01em' }}>
+          MY<span style={{ color: 'var(--mauve)' }}>TRACK</span>LIST
+        </h1>
+        <div style={{ height: 3, width: 64, background: 'var(--gold)', marginTop: 10 }} />
+        <p style={{ fontSize: 12, color: 'var(--subtext)', marginTop: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+          Serie, anime e cartoni — tutto tracciato
+        </p>
+      </div>
 
       <section style={{ marginBottom: 32 }}>
         <h2 className="section-title">In corso</h2>

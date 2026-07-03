@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { useParams } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import {
   getShowDetails, getSeasonDetails, posterUrl, backdropUrl, profileUrl, formatRuntime, STATUSES
 } from '../lib/tmdb'
@@ -15,6 +16,7 @@ const STATUS_LABEL = Object.fromEntries(STATUSES.map(s => [s.value, s.label]))
 export default function ShowDetail() {
   const { tmdbId } = useParams()
   const { user } = useAuth()
+  const { showToast } = useToast()
   const showId = parseInt(tmdbId, 10)
 
   const [tmdbShow, setTmdbShow] = useState(null)
@@ -32,47 +34,60 @@ export default function ShowDetail() {
 
   const load = useCallback(async () => {
     setLoading(true)
-    const details = await getShowDetails(showId)
-    setTmdbShow(details)
+    try {
+      const details = await getShowDetails(showId)
+      setTmdbShow(details)
 
-    if (user) {
-      const [{ data: us }, { data: eps }, { data: eds }, { data: st }, { data: fav }] = await Promise.all([
-        supabase.from('user_shows').select('*').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle(),
-        supabase.from('user_episodes').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-        supabase.from('episode_details').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-        supabase.from('season_tracking').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-        supabase.from('user_favorites').select('id').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle()
-      ])
-      setUserShow(us || null)
-      setWatchedSet(new Set((eps || []).map(e => `${e.season_number}-${e.episode_number}`)))
-      const dMap = {}
-      ;(eds || []).forEach(d => { dMap[`${d.season_number}-${d.episode_number}`] = d })
-      setDetailsMap(dMap)
-      const sMap = {}
-      ;(st || []).forEach(s => { sMap[s.season_number] = s })
-      setSeasonTracking(sMap)
-      setIsFavorite(!!fav)
+      if (user) {
+        const [{ data: us }, { data: eps }, { data: eds }, { data: st }, { data: fav }] = await Promise.all([
+          supabase.from('user_shows').select('*').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle(),
+          supabase.from('user_episodes').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
+          supabase.from('episode_details').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
+          supabase.from('season_tracking').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
+          supabase.from('user_favorites').select('id').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle()
+        ])
+        setUserShow(us || null)
+        setWatchedSet(new Set((eps || []).map(e => `${e.season_number}-${e.episode_number}`)))
+        const dMap = {}
+        ;(eds || []).forEach(d => { dMap[`${d.season_number}-${d.episode_number}`] = d })
+        setDetailsMap(dMap)
+        const sMap = {}
+        ;(st || []).forEach(s => { sMap[s.season_number] = s })
+        setSeasonTracking(sMap)
+        setIsFavorite(!!fav)
+      }
+    } catch (err) {
+      console.error('Errore caricamento serie:', err)
+      showToast(err?.message ? `Errore nel caricamento: ${err.message}` : 'Errore nel caricamento della serie.', 'error')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }, [showId, user])
 
   useEffect(() => { load() }, [load])
 
   async function toggleFavorite() {
     if (!user || !tmdbShow) return
-    if (isFavorite) {
-      await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', showId)
-      setIsFavorite(false)
-    } else {
-      const { count } = await supabase.from('user_favorites').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
-      if ((count || 0) >= 6) {
-        alert('Puoi avere al massimo 6 serie preferite.')
-        return
+    try {
+      if (isFavorite) {
+        const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', showId)
+        if (error) throw error
+        setIsFavorite(false)
+      } else {
+        const { count } = await supabase.from('user_favorites').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
+        if ((count || 0) >= 6) {
+          showToast('Puoi avere al massimo 6 serie preferite.', 'info')
+          return
+        }
+        const { error } = await supabase.from('user_favorites').insert({
+          user_id: user.id, tmdb_id: showId, title: tmdbShow.name, poster_path: tmdbShow.poster_path, position: count || 0
+        })
+        if (error) throw error
+        setIsFavorite(true)
       }
-      await supabase.from('user_favorites').insert({
-        user_id: user.id, tmdb_id: showId, title: tmdbShow.name, poster_path: tmdbShow.poster_path, position: count || 0
-      })
-      setIsFavorite(true)
+    } catch (err) {
+      console.error('Errore preferiti:', err)
+      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nell\'aggiornamento dei preferiti.', 'error')
     }
   }
 
@@ -87,6 +102,9 @@ export default function ShowDetail() {
       try {
         const data = await getSeasonDetails(showId, seasonNumber)
         setSeasonEpisodes(prev => ({ ...prev, [seasonNumber]: data.episodes || [] }))
+      } catch (err) {
+        console.error('Errore caricamento stagione:', err)
+        showToast('Errore nel caricamento degli episodi di questa stagione.', 'error')
       } finally {
         setLoadingSeason(null)
       }
@@ -98,47 +116,54 @@ export default function ShowDetail() {
     const key = `${seasonNumber}-${episode.episode_number}`
     const isWatched = watchedSet.has(key)
 
-    if (isWatched) {
-      await supabase.from('user_episodes').delete()
-        .eq('user_id', user.id).eq('tmdb_show_id', showId)
-        .eq('season_number', seasonNumber).eq('episode_number', episode.episode_number)
-      setWatchedSet(prev => { const s = new Set(prev); s.delete(key); return s })
-    } else {
-      await supabase.from('user_episodes').upsert({
-        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-        episode_number: episode.episode_number, watched_at: new Date().toISOString()
-      }, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-      setWatchedSet(prev => new Set(prev).add(key))
-
-      // Auto-status: se la serie era "da vedere", passa a "in corso"
-      if (userShow && userShow.status === 'planned') {
-        const { data } = await supabase.from('user_shows').update({ status: 'watching', updated_at: new Date().toISOString() })
-          .eq('id', userShow.id).select().single()
-        setUserShow(data)
-      } else if (!userShow) {
-        // La serie non è ancora in libreria: aggiungila automaticamente come "in corso"
-        const { data } = await supabase.from('user_shows').upsert({
-          user_id: user.id, tmdb_id: showId, media_type: 'tv', status: 'watching',
-          title: tmdbShow.name, original_title: tmdbShow.original_name,
-          poster_path: tmdbShow.poster_path, backdrop_path: tmdbShow.backdrop_path,
-          first_air_year: tmdbShow.first_air_date ? parseInt(tmdbShow.first_air_date.slice(0, 4)) : null,
-          total_episodes: tmdbShow.number_of_episodes || null,
-          episode_runtime: tmdbShow.episode_run_time?.[0] || null,
-          genres: JSON.stringify((tmdbShow.genres || []).map(g => g.name)),
-          watch_count: 1, updated_at: new Date().toISOString()
-        }, { onConflict: 'user_id,tmdb_id' }).select().single()
-        setUserShow(data)
-      }
-
-      // Season tracking: imposta data inizio se prima visione della stagione
-      const existing = seasonTracking[seasonNumber]
-      if (!existing) {
-        const { data } = await supabase.from('season_tracking').upsert({
+    try {
+      if (isWatched) {
+        const { error } = await supabase.from('user_episodes').delete()
+          .eq('user_id', user.id).eq('tmdb_show_id', showId)
+          .eq('season_number', seasonNumber).eq('episode_number', episode.episode_number)
+        if (error) throw error
+        setWatchedSet(prev => { const s = new Set(prev); s.delete(key); return s })
+      } else {
+        const { error } = await supabase.from('user_episodes').upsert({
           user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-          start_date: new Date().toISOString().slice(0, 10), watch_count: 0
-        }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-        setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+          episode_number: episode.episode_number, watched_at: new Date().toISOString()
+        }, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
+        if (error) throw error
+        setWatchedSet(prev => new Set(prev).add(key))
+
+        // Auto-status: se la serie era "da vedere", passa a "in corso"
+        if (userShow && userShow.status === 'planned') {
+          const { data } = await supabase.from('user_shows').update({ status: 'watching', updated_at: new Date().toISOString() })
+            .eq('id', userShow.id).select().single()
+          setUserShow(data)
+        } else if (!userShow) {
+          // La serie non è ancora in libreria: aggiungila automaticamente come "in corso"
+          const { data } = await supabase.from('user_shows').upsert({
+            user_id: user.id, tmdb_id: showId, media_type: 'tv', status: 'watching',
+            title: tmdbShow.name, original_title: tmdbShow.original_name,
+            poster_path: tmdbShow.poster_path, backdrop_path: tmdbShow.backdrop_path,
+            first_air_year: tmdbShow.first_air_date ? parseInt(tmdbShow.first_air_date.slice(0, 4)) : null,
+            total_episodes: tmdbShow.number_of_episodes || null,
+            episode_runtime: tmdbShow.episode_run_time?.[0] || null,
+            genres: JSON.stringify((tmdbShow.genres || []).map(g => g.name)),
+            watch_count: 1, updated_at: new Date().toISOString()
+          }, { onConflict: 'user_id,tmdb_id' }).select().single()
+          setUserShow(data)
+        }
+
+        // Season tracking: imposta data inizio se prima visione della stagione
+        const existing = seasonTracking[seasonNumber]
+        if (!existing) {
+          const { data } = await supabase.from('season_tracking').upsert({
+            user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
+            start_date: new Date().toISOString().slice(0, 10), watch_count: 0
+          }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
+          setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+        }
       }
+    } catch (err) {
+      console.error('Errore aggiornamento episodio:', err)
+      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio dell\'episodio.', 'error')
     }
   }
 
@@ -155,53 +180,72 @@ export default function ShowDetail() {
   async function markAllSeason(seasonNumber, mark) {
     if (!user) return
     const episodes = seasonEpisodes[seasonNumber] || []
-    if (mark) {
-      const rows = episodes.map(ep => ({
-        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-        episode_number: ep.episode_number, watched_at: new Date().toISOString()
-      }))
-      await supabase.from('user_episodes').upsert(rows, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-      setWatchedSet(prev => {
-        const s = new Set(prev)
-        episodes.forEach(ep => s.add(`${seasonNumber}-${ep.episode_number}`))
-        return s
-      })
-      if (userShow && userShow.status === 'planned') {
-        const { data } = await supabase.from('user_shows').update({ status: 'watching' }).eq('id', userShow.id).select().single()
-        setUserShow(data)
+    try {
+      if (mark) {
+        const rows = episodes.map(ep => ({
+          user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
+          episode_number: ep.episode_number, watched_at: new Date().toISOString()
+        }))
+        const { error } = await supabase.from('user_episodes').upsert(rows, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
+        if (error) throw error
+        setWatchedSet(prev => {
+          const s = new Set(prev)
+          episodes.forEach(ep => s.add(`${seasonNumber}-${ep.episode_number}`))
+          return s
+        })
+        if (userShow && userShow.status === 'planned') {
+          const { data } = await supabase.from('user_shows').update({ status: 'watching' }).eq('id', userShow.id).select().single()
+          setUserShow(data)
+        }
+      } else {
+        const { error } = await supabase.from('user_episodes').delete()
+          .eq('user_id', user.id).eq('tmdb_show_id', showId).eq('season_number', seasonNumber)
+        if (error) throw error
+        setWatchedSet(prev => {
+          const s = new Set(prev)
+          episodes.forEach(ep => s.delete(`${seasonNumber}-${ep.episode_number}`))
+          return s
+        })
       }
-    } else {
-      await supabase.from('user_episodes').delete()
-        .eq('user_id', user.id).eq('tmdb_show_id', showId).eq('season_number', seasonNumber)
-      setWatchedSet(prev => {
-        const s = new Set(prev)
-        episodes.forEach(ep => s.delete(`${seasonNumber}-${ep.episode_number}`))
-        return s
-      })
+    } catch (err) {
+      console.error('Errore aggiornamento stagione:', err)
+      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio della stagione.', 'error')
     }
   }
 
   async function bumpSeasonRewatch(seasonNumber) {
     if (!user) return
-    const existing = seasonTracking[seasonNumber]
-    const newCount = (existing?.watch_count || 0) + 1
-    const { data } = await supabase.from('season_tracking').upsert({
-      user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-      start_date: existing?.start_date || null, end_date: existing?.end_date || null, watch_count: newCount
-    }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-    setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+    try {
+      const existing = seasonTracking[seasonNumber]
+      const newCount = (existing?.watch_count || 0) + 1
+      const { data, error } = await supabase.from('season_tracking').upsert({
+        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
+        start_date: existing?.start_date || null, end_date: existing?.end_date || null, watch_count: newCount
+      }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
+      if (error) throw error
+      setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+    } catch (err) {
+      console.error('Errore rewatch stagione:', err)
+      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio del rewatch.', 'error')
+    }
   }
 
   async function updateSeasonDate(seasonNumber, field, value) {
     if (!user) return
-    const existing = seasonTracking[seasonNumber]
-    const { data } = await supabase.from('season_tracking').upsert({
-      user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-      start_date: field === 'start_date' ? value : (existing?.start_date || null),
-      end_date: field === 'end_date' ? value : (existing?.end_date || null),
-      watch_count: existing?.watch_count || 0
-    }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-    setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+    try {
+      const existing = seasonTracking[seasonNumber]
+      const { data, error } = await supabase.from('season_tracking').upsert({
+        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
+        start_date: field === 'start_date' ? value : (existing?.start_date || null),
+        end_date: field === 'end_date' ? value : (existing?.end_date || null),
+        watch_count: existing?.watch_count || 0
+      }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
+      if (error) throw error
+      setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
+    } catch (err) {
+      console.error('Errore data stagione:', err)
+      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio della data.', 'error')
+    }
   }
 
   if (loading || !tmdbShow) return <Spinner label="Caricamento serie..." />
@@ -323,6 +367,11 @@ export default function ShowDetail() {
                         ↻ Rewatch (×{tracking?.watch_count || 0})
                       </button>
                     </div>
+                    {tracking?.watch_count > 0 && (
+                      <p style={{ fontSize: 11, color: 'var(--subtext)', marginBottom: 10 }}>
+                        Questa stagione viene conteggiata ×{(tracking.watch_count || 0) + 1} nelle ore ed episodi totali nelle statistiche.
+                      </p>
+                    )}
 
                     {loadingSeason === season.season_number ? (
                       <Spinner label="Caricamento episodi..." />

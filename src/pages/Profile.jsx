@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { posterUrl } from '../lib/tmdb'
 import { computeStats } from '../lib/stats'
 import StatsCharts from '../components/StatsCharts'
@@ -9,6 +10,7 @@ import Spinner from '../components/Spinner'
 
 export default function Profile() {
   const { user, profile, signOut, refreshProfile } = useAuth()
+  const { showToast } = useToast()
   const [tab, setTab] = useState('profilo')
   const [form, setForm] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -31,17 +33,27 @@ export default function Profile() {
     let cancelled = false
     async function load() {
       setLoading(true)
-      const [{ data: favs }, { data: shows }, { data: episodes }, { data: episodeDetails }] = await Promise.all([
-        supabase.from('user_favorites').select('*').eq('user_id', user.id).order('position'),
-        supabase.from('user_shows').select('*').eq('user_id', user.id),
-        supabase.from('user_episodes').select('*').eq('user_id', user.id),
-        supabase.from('episode_details').select('*').eq('user_id', user.id)
-      ])
-      if (cancelled) return
-      setFavorites(favs || [])
-      setLibraryShows(shows || [])
-      setStats(computeStats({ shows: shows || [], episodes: episodes || [], episodeDetails: episodeDetails || [] }))
-      setLoading(false)
+      try {
+        const [{ data: favs }, { data: shows }, { data: episodes }, { data: episodeDetails }, { data: seasonTracking }] = await Promise.all([
+          supabase.from('user_favorites').select('*').eq('user_id', user.id).order('position'),
+          supabase.from('user_shows').select('*').eq('user_id', user.id),
+          supabase.from('user_episodes').select('*').eq('user_id', user.id),
+          supabase.from('episode_details').select('*').eq('user_id', user.id),
+          supabase.from('season_tracking').select('*').eq('user_id', user.id)
+        ])
+        if (cancelled) return
+        setFavorites(favs || [])
+        setLibraryShows(shows || [])
+        setStats(computeStats({
+          shows: shows || [], episodes: episodes || [], episodeDetails: episodeDetails || [],
+          seasonTracking: seasonTracking || []
+        }))
+      } catch (err) {
+        console.error('Errore caricamento profilo:', err)
+        showToast('Errore nel caricamento dei dati del profilo.', 'error')
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
     }
     load()
     return () => { cancelled = true }
@@ -49,7 +61,7 @@ export default function Profile() {
 
   async function handleSaveProfile(e) {
     e.preventDefault()
-    if (!form.username.trim()) { alert('Lo username è obbligatorio.'); return }
+    if (!form.username.trim()) { showToast('Lo username è obbligatorio.', 'info'); return }
     setSaving(true)
     const { error } = await supabase.from('user_profiles').upsert({
       id: user.id,
@@ -67,25 +79,36 @@ export default function Profile() {
     })
     setSaving(false)
     if (error) {
-      alert(error.message.includes('duplicate') ? 'Questo username è già in uso.' : 'Errore nel salvataggio.')
+      showToast(error.message.includes('duplicate') ? 'Questo username è già in uso.' : `Errore nel salvataggio: ${error.message}`, 'error')
       return
     }
+    showToast('Profilo salvato', 'success')
     await refreshProfile()
   }
 
   async function removeFavorite(tmdbId) {
-    await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', tmdbId)
-    setFavorites(prev => prev.filter(f => f.tmdb_id !== tmdbId))
+    try {
+      const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', tmdbId)
+      if (error) throw error
+      setFavorites(prev => prev.filter(f => f.tmdb_id !== tmdbId))
+    } catch (err) {
+      showToast('Errore nella rimozione del preferito.', 'error')
+    }
   }
 
   async function addFavorite(show) {
-    if (favorites.length >= 6) { alert('Massimo 6 serie preferite.'); return }
+    if (favorites.length >= 6) { showToast('Massimo 6 serie preferite.', 'info'); return }
     if (favorites.some(f => f.tmdb_id === show.tmdb_id)) return
-    const { data } = await supabase.from('user_favorites').insert({
-      user_id: user.id, tmdb_id: show.tmdb_id, title: show.title, poster_path: show.poster_path, position: favorites.length
-    }).select().single()
-    setFavorites(prev => [...prev, data])
-    setFavSearch('')
+    try {
+      const { data, error } = await supabase.from('user_favorites').insert({
+        user_id: user.id, tmdb_id: show.tmdb_id, title: show.title, poster_path: show.poster_path, position: favorites.length
+      }).select().single()
+      if (error) throw error
+      setFavorites(prev => [...prev, data])
+      setFavSearch('')
+    } catch (err) {
+      showToast('Errore nell\'aggiunta ai preferiti.', 'error')
+    }
   }
 
   function copyPublicLink() {

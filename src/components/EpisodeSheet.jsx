@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
 import { EMOTIONS, PLATFORMS, DEVICES, getEpisodeCredits } from '../lib/tmdb'
 import StarRating from './StarRating'
 import CastPicker from './CastPicker'
@@ -11,6 +12,7 @@ function todayISO() {
 
 export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watched, details, onClose, onSaved }) {
   const { user } = useAuth()
+  const { showToast } = useToast()
   const [isWatched, setIsWatched] = useState(!!watched)
   const [watchedDate, setWatchedDate] = useState(details?.watched_date || todayISO())
   const [rating, setRating] = useState(details?.rating || 0)
@@ -18,19 +20,21 @@ export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watche
   const [favCharacter, setFavCharacter] = useState(details?.fav_character || '')
   const [platform, setPlatform] = useState(details?.platform || '')
   const [device, setDevice] = useState(details?.device || '')
-  const [watchCount, setWatchCount] = useState(details?.watch_count || (watched ? 1 : 0))
   const [note, setNote] = useState(details?.note || '')
   const [cast, setCast] = useState([])
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
+    let cancelled = false
     getEpisodeCredits(tmdbShowId, seasonNumber, episode.episode_number)
       .then(data => {
+        if (cancelled) return
         const combined = [...(data.cast || []), ...(data.guest_stars || [])]
         const unique = Array.from(new Map(combined.map(c => [c.name, c])).values())
         setCast(unique)
       })
-      .catch(() => setCast([]))
+      .catch(() => { if (!cancelled) setCast([]) })
+    return () => { cancelled = true }
   }, [tmdbShowId, seasonNumber, episode.episode_number])
 
   function toggleEmotion(id) {
@@ -38,31 +42,30 @@ export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watche
   }
 
   function toggleWatchedSwitch() {
-    const next = !isWatched
-    setIsWatched(next)
-    if (next && !watchCount) setWatchCount(1)
-    if (!next) setWatchCount(0)
+    setIsWatched(prev => !prev)
   }
 
   async function handleSave() {
-    if (!user) return
+    if (!user || saving) return
     setSaving(true)
     try {
       // user_episodes: presenza = visto
       if (isWatched) {
-        await supabase.from('user_episodes').upsert({
+        const { error: epError } = await supabase.from('user_episodes').upsert({
           user_id: user.id,
           tmdb_show_id: tmdbShowId,
           season_number: seasonNumber,
           episode_number: episode.episode_number,
           watched_at: new Date(watchedDate).toISOString()
         }, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
+        if (epError) throw epError
       } else {
-        await supabase.from('user_episodes').delete()
+        const { error: delError } = await supabase.from('user_episodes').delete()
           .eq('user_id', user.id)
           .eq('tmdb_show_id', tmdbShowId)
           .eq('season_number', seasonNumber)
           .eq('episode_number', episode.episode_number)
+        if (delError) throw delError
       }
 
       // episode_details: dettagli sempre salvati se c'è qualcosa da salvare
@@ -76,22 +79,23 @@ export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watche
         fav_character: favCharacter || null,
         platform: platform || null,
         device: device || null,
-        watch_count: watchCount,
         note: note || null,
         watched_date: isWatched ? watchedDate : (details?.watched_date || null),
         updated_at: new Date().toISOString()
       }
-      const { data: savedDetails } = await supabase
+      const { data: savedDetails, error: detailsError } = await supabase
         .from('episode_details')
         .upsert(detailPayload, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
         .select()
-        .single()
+        .maybeSingle()
+      if (detailsError) throw detailsError
 
       onSaved({ watched: isWatched, details: savedDetails })
+      showToast('Episodio salvato', 'success')
       onClose()
     } catch (err) {
-      console.error(err)
-      alert('Errore nel salvataggio. Riprova.')
+      console.error('Errore salvataggio episodio:', err)
+      showToast(err?.message ? `Errore nel salvataggio: ${err.message}` : 'Errore nel salvataggio. Riprova.', 'error')
     } finally {
       setSaving(false)
     }
@@ -166,15 +170,6 @@ export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watche
               <option value="">—</option>
               {DEVICES.map(d => <option key={d} value={d}>{d}</option>)}
             </select>
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Volte visto</label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <button className="btn secondary" onClick={() => setWatchCount(c => Math.max(0, c - 1))}>−</button>
-            <span style={{ fontSize: 18, minWidth: 24, textAlign: 'center' }}>{watchCount}</span>
-            <button className="btn secondary" onClick={() => setWatchCount(c => c + 1)}>+</button>
           </div>
         </div>
 

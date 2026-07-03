@@ -27,13 +27,15 @@ export default function PublicProfile() {
       setProfile(profileData || null)
       if (!profileData) return
 
-      const [{ data: favs }, { data: shows }] = await Promise.all([
+      const [{ data: favs }, { data: shows }, { data: seasonTracking }, { data: episodes }] = await Promise.all([
         supabase.from('user_favorites').select('*').eq('user_id', profileData.id).order('position'),
-        supabase.from('user_shows').select('*').eq('user_id', profileData.id)
+        supabase.from('user_shows').select('*').eq('user_id', profileData.id),
+        supabase.from('season_tracking').select('*').eq('user_id', profileData.id),
+        supabase.from('user_episodes').select('*').eq('user_id', profileData.id)
       ])
       if (cancelled) return
       setFavorites(favs || [])
-      setStats(computeStats({ shows: shows || [], episodes: [], episodeDetails: [] }))
+      setStats(computeStats({ shows: shows || [], episodes: episodes || [], episodeDetails: [], seasonTracking: seasonTracking || [] }))
     }
     load()
     return () => { cancelled = true }

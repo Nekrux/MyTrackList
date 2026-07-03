@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend
@@ -24,6 +25,51 @@ function ChartCard({ title, children }) {
   )
 }
 
+const GRANULARITIES = [
+  { key: 'daily', label: 'Giorni' },
+  { key: 'weekly', label: 'Settimane' },
+  { key: 'monthly', label: 'Mesi' },
+  { key: 'yearly', label: 'Anni' }
+]
+
+function HoursOverTime({ series }) {
+  const [granularity, setGranularity] = useState('monthly')
+  const data = series?.[granularity] || []
+  const hasYearlyData = series?.yearly?.length > 0
+
+  return (
+    <ChartCard title="Ore guardate nel tempo">
+      <div className="chip-row" style={{ marginBottom: 10 }}>
+        {GRANULARITIES.filter(g => g.key !== 'yearly' || hasYearlyData).map(g => (
+          <button
+            key={g.key}
+            className={`chip ${granularity === g.key ? 'active' : ''}`}
+            onClick={() => setGranularity(g.key)}
+          >
+            {g.label}
+          </button>
+        ))}
+      </div>
+      {data.length === 0 ? (
+        <p style={{ fontSize: 12, color: 'var(--subtext)' }}>Nessun dato disponibile per questo periodo.</p>
+      ) : (
+        <ResponsiveContainer width="100%" height={160}>
+          <BarChart data={data}>
+            <CartesianGrid strokeDasharray="3 3" stroke={SURFACE} vertical={false} />
+            <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: SURFACE }} tickLine={false} interval="preserveStartEnd" />
+            <YAxis tick={axisStyle} axisLine={false} tickLine={false} width={28} />
+            <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`${v}h`, 'Ore']} />
+            <Bar dataKey="hours" fill={MAUVE} />
+          </BarChart>
+        </ResponsiveContainer>
+      )}
+      <p style={{ fontSize: 10, color: 'var(--subtext)', marginTop: 8, lineHeight: 1.4 }}>
+        Include il moltiplicatore dei rewatch di stagione. Le ore dei rewatch sono attribuite alla data dell'ultima visione registrata dell'episodio.
+      </p>
+    </ChartCard>
+  )
+}
+
 export default function StatsCharts({ stats, variant = 'full' }) {
   if (!stats) return null
 
@@ -47,14 +93,20 @@ export default function StatsCharts({ stats, variant = 'full' }) {
             <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--mauve)' }}>{stats.episodesThisMonth}</div>
             <div style={{ fontSize: 11, color: 'var(--subtext)' }}>Episodi questo mese</div>
           </div>
+          <div className="card" style={{ padding: 14 }}>
+            <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--gold)' }}>{stats.totalEpisodeViews}</div>
+            <div style={{ fontSize: 11, color: 'var(--subtext)' }}>Episodi visti (con rewatch)</div>
+          </div>
           {stats.avgEpisodeRating && (
-            <div className="card" style={{ padding: 14, gridColumn: '1 / -1' }}>
+            <div className="card" style={{ padding: 14 }}>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--gold)' }}>{stats.avgEpisodeRating.toFixed(1)}/10</div>
               <div style={{ fontSize: 11, color: 'var(--subtext)' }}>Voto medio episodi</div>
             </div>
           )}
         </div>
       )}
+
+      {variant === 'full' && <HoursOverTime series={stats.hoursSeries} />}
 
       {variant === 'full' && (
         <ChartCard title="Episodi per mese">
