@@ -1,207 +1,201 @@
-import { useRef, useState } from 'react'
+import { useState, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import Papa from 'papaparse'
-import { supabase } from '../lib/supabase'
+import JSZip from 'jszip'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { searchTv } from '../lib/tmdb'
+import { searchTv, getShow, avgRuntime, yearOf, genreNames } from '../lib/tmdb'
+import { upsertShow, markEpisode } from '../lib/db'
 
-function normalizeStatus(raw) {
-  const s = (raw || '').toLowerCase()
-  if (s.includes('watching') && !s.includes('stop')) return 'watching'
-  if (s.includes('watched') || s.includes('completed') || s.includes('complete')) return 'completed'
-  if (s.includes('plan') || s.includes('want') || s.includes('to watch')) return 'planned'
-  if (s.includes('pause') || s.includes('hold')) return 'paused'
-  if (s.includes('stop') || s.includes('drop')) return 'dropped'
-  return 'planned'
-}
+const delay = (ms) => new Promise(r => setTimeout(r, ms))
 
-function findColumn(fields, candidates) {
-  return fields.find(f => candidates.some(c => f.toLowerCase().includes(c)))
+// Individua la colonna più probabile per un ruolo, tra le intestazioni disponibili.
+function guessColumn(headers, patterns) {
+  for (const p of patterns) {
+    const hit = headers.find(h => p.test(h))
+    if (hit) return hit
+  }
+  return ''
 }
 
 export default function ImportTVTime() {
   const { user } = useAuth()
-  const { showToast } = useToast()
-  const fileInputRef = useRef(null)
-  const [rows, setRows] = useState(null)
-  const [columns, setColumns] = useState(null)
-  const [dragOver, setDragOver] = useState(false)
-  const [importing, setImporting] = useState(false)
-  const [progress, setProgress] = useState({ current: 0, total: 0, name: '' })
-  const [results, setResults] = useState(null)
+  const toast = useToast()
+  const nav = useNavigate()
+  const fileRef = useRef(null)
 
-  function parseFile(file) {
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (res) => {
-        const fields = res.meta.fields || []
-        const titleCol = findColumn(fields, ['show', 'title', 'name'])
-        const statusCol = findColumn(fields, ['status'])
-        const ratingCol = findColumn(fields, ['rating', 'score', 'vote'])
-        if (!titleCol) {
-          showToast('Non riesco a trovare una colonna con il nome della serie nel CSV.', 'error')
-          return
-        }
-        setColumns({ titleCol, statusCol, ratingCol })
-        setRows(res.data.filter(r => r[titleCol]?.trim()))
-        setResults(null)
-      },
-      error: () => showToast('Errore nella lettura del file CSV.', 'error')
-    })
-  }
+  const [rows, setRows] = useState([])
+  const [headers, setHeaders] = useState([])
+  const [map, setMap] = useState({ series: '', season: '', episode: '', date: '' })
+  const [fileName, setFileName] = useState('')
+  const [running, setRunning] = useState(false)
+  const [progress, setProgress] = useState({ done: 0, total: 0 })
+  const [log, setLog] = useState([])
 
-  function handleDrop(e) {
-    e.preventDefault()
-    setDragOver(false)
-    const file = e.dataTransfer.files?.[0]
-    if (file) parseFile(file)
-  }
+  const pushLog = (msg, type = 'info') => setLog(l => [{ msg, type, id: Math.random() }, ...l].slice(0, 200))
 
-  function handleFileSelect(e) {
-    const file = e.target.files?.[0]
-    if (file) parseFile(file)
-  }
-
-  async function runImport() {
-    if (!rows || !user) return
-    setImporting(true)
-    const log = { success: [], skipped: [], errors: [] }
-    setProgress({ current: 0, total: rows.length, name: '' })
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      const title = row[columns.titleCol]?.trim()
-      setProgress({ current: i + 1, total: rows.length, name: title })
-      try {
-        const searchRes = await searchTv(title)
-        const match = searchRes.results?.[0]
-        if (!match) {
-          log.skipped.push(`${title} — nessuna corrispondenza su TMDB`)
-        } else {
-          const status = normalizeStatus(row[columns.statusCol])
-          const ratingRaw = columns.ratingCol ? parseFloat(row[columns.ratingCol]) : null
-          const rating = ratingRaw && ratingRaw > 0 ? Math.min(10, Math.round(ratingRaw)) : null
-
-          const { error } = await supabase.from('user_shows').upsert({
-            user_id: user.id,
-            tmdb_id: match.id,
-            media_type: 'tv',
-            status,
-            rating,
-            title: match.name,
-            original_title: match.original_name,
-            poster_path: match.poster_path,
-            backdrop_path: match.backdrop_path,
-            first_air_year: match.first_air_date ? parseInt(match.first_air_date.slice(0, 4)) : null,
-            genres: JSON.stringify([]),
-            watch_count: 1,
-            updated_at: new Date().toISOString()
-          }, { onConflict: 'user_id,tmdb_id' })
-
-          if (error) log.errors.push(`${title} — ${error.message}`)
-          else log.success.push(`${title} → ${match.name}`)
-        }
-      } catch (err) {
-        log.errors.push(`${title} — ${err.message}`)
+  const handleFile = async (file) => {
+    if (!file) return
+    setFileName(file.name)
+    setLog([]); setRows([]); setHeaders([])
+    try {
+      let text = ''
+      if (file.name.toLowerCase().endsWith('.zip')) {
+        const zip = await JSZip.loadAsync(file)
+        // cerca il CSV di tracking serie/episodi nell'export GDPR
+        const names = Object.keys(zip.files)
+        const target = names.find(n => /tracking.*v2.*\.csv$/i.test(n))
+          || names.find(n => /tracking.*\.csv$/i.test(n))
+          || names.find(n => n.toLowerCase().endsWith('.csv'))
+        if (!target) { toast.error('Nessun CSV trovato nello ZIP.'); return }
+        pushLog(`CSV trovato nello ZIP: ${target}`)
+        text = await zip.files[target].async('string')
+      } else {
+        text = await file.text()
       }
-      await new Promise(r => setTimeout(r, 300))
+      const parsed = Papa.parse(text, { header: true, skipEmptyLines: true })
+      const data = parsed.data || []
+      if (!data.length) { toast.error('Il file non contiene righe leggibili.'); return }
+      const hdrs = parsed.meta?.fields || Object.keys(data[0])
+      setRows(data); setHeaders(hdrs)
+      // auto-guess mappatura (adattabile a mano quando arriva il file reale)
+      setMap({
+        series: guessColumn(hdrs, [/series.*name/i, /show.*name/i, /^title$/i, /^name$/i, /series/i]),
+        season: guessColumn(hdrs, [/season.*number/i, /^season$/i, /season/i]),
+        episode: guessColumn(hdrs, [/episode.*number/i, /^episode$/i, /episode/i, /number/i]),
+        date: guessColumn(hdrs, [/watched.*at/i, /last.*watched/i, /watched/i, /created.*at/i, /date/i, /timestamp/i]),
+      })
+      toast.success(`${data.length} righe caricate. Controlla la mappatura colonne.`)
+    } catch (e) {
+      toast.error('Errore lettura file: ' + e.message)
     }
-
-    setResults(log)
-    setImporting(false)
   }
+
+  const onDrop = (e) => { e.preventDefault(); handleFile(e.dataTransfer.files?.[0]) }
+
+  const runImport = async () => {
+    if (!map.series) return toast.error('Seleziona almeno la colonna del titolo serie.')
+    setRunning(true); setLog([])
+
+    // raggruppa per serie
+    const groups = {}
+    for (const r of rows) {
+      const name = (r[map.series] || '').trim()
+      if (!name) continue
+      const s = parseInt(r[map.season], 10)
+      const e = parseInt(r[map.episode], 10)
+      const rawDate = map.date ? r[map.date] : null
+      const date = rawDate ? String(rawDate).slice(0, 10) : null
+      ;(groups[name] ||= []).push({ s, e, date })
+    }
+    const names = Object.keys(groups)
+    setProgress({ done: 0, total: names.length })
+
+    let ok = 0, skip = 0, fail = 0
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i]
+      try {
+        const results = await searchTv(name)
+        if (!results.length) { pushLog(`Non trovata su TMDB: ${name}`, 'error'); skip++; setProgress({ done: i + 1, total: names.length }); await delay(300); continue }
+        const match = results[0]
+        // dati completi (runtime, generi, ecc.)
+        const full = await getShow(match.id)
+        const eps = groups[name].filter(x => Number.isFinite(x.s) && Number.isFinite(x.e))
+        const watchedCount = eps.length
+        const status = full.number_of_episodes && watchedCount >= full.number_of_episodes ? 'completata' : 'in_corso'
+        const isAnim = (full.genres || []).some(g => g.id === 16)
+        const type = isAnim ? (full.original_language === 'ja' ? 'anime' : 'cartone') : 'serie'
+
+        await upsertShow({
+          user_id: user.id, tmdb_id: match.id, status, show_type: type,
+          title: full.name, original_title: full.original_name,
+          poster_path: full.poster_path, backdrop_path: full.backdrop_path,
+          first_air_year: yearOf(full), total_episodes: full.number_of_episodes,
+          episode_runtime: avgRuntime(full), genres: JSON.stringify(genreNames(full)),
+        })
+        // marca episodi visti
+        for (const ep of eps) {
+          await markEpisode(user.id, match.id, ep.s, ep.e, ep.date)
+        }
+        pushLog(`✓ ${name} → ${full.name} (${eps.length} ep, ${status})`, 'success')
+        ok++
+      } catch (err) {
+        pushLog(`Errore su ${name}: ${err.message}`, 'error'); fail++
+      }
+      setProgress({ done: i + 1, total: names.length })
+      await delay(300) // rispetta TMDB
+    }
+    setRunning(false)
+    toast.success(`Import finito: ${ok} importate, ${skip} non trovate, ${fail} errori.`)
+  }
+
+  const pct = progress.total ? Math.round(progress.done / progress.total * 100) : 0
 
   return (
-    <div className="page">
-      <div className="eyebrow">MyTrackList</div>
-      <h1 style={{ fontSize: 28, marginBottom: 8 }}>Importa da TVTime</h1>
-      <p style={{ fontSize: 13, color: 'var(--subtext)', marginBottom: 20, lineHeight: 1.5 }}>
-        TVTime non esporta dati su episodi, emozioni o personaggi preferiti — solo stato di visione e voto della serie.
-        Il resto potrai aggiungerlo con il tempo direttamente in MyTrackList.
-      </p>
+    <div className="page page-pad-top">
+      <button className="chip" onClick={() => nav('/profilo')} style={{ marginBottom: 12 }}>‹ Profilo</button>
+      <h1 className="section-title" style={{ fontSize: 30 }}>Importa da TVTime</h1>
 
-      {!rows && (
-        <div
-          onClick={() => fileInputRef.current?.click()}
-          onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={handleDrop}
-          className="card"
-          style={{
-            padding: 40, textAlign: 'center', cursor: 'pointer',
-            borderColor: dragOver ? 'var(--mauve)' : undefined,
-            borderStyle: 'dashed', borderWidth: 2
-          }}
-        >
-          <div style={{ fontSize: 32, marginBottom: 10 }}>⇪</div>
-          <p style={{ fontWeight: 600, marginBottom: 4 }}>Trascina qui il tuo file CSV</p>
-          <p style={{ fontSize: 12, color: 'var(--subtext)' }}>oppure tocca per selezionarlo</p>
-          <input ref={fileInputRef} type="file" accept=".csv" onChange={handleFileSelect} style={{ display: 'none' }} />
-        </div>
+      <div className="card" style={{ padding: 14, marginBottom: 16 }}>
+        <p className="subtext" style={{ fontSize: 13, lineHeight: 1.5 }}>
+          Carica l'export GDPR di TVTime (lo ZIP o il file <span className="muted">tracking-prod-records-v2.csv</span>).
+          Vengono importati <b>serie, episodi visti, date e stato</b>. Non sono importabili emozioni, personaggi preferiti e reazioni:
+          TVTime non li include nell'export, quindi nessuno strumento può recuperarli.
+        </p>
+      </div>
+
+      <div className="dropzone" onDrop={onDrop} onDragOver={e => e.preventDefault()} onClick={() => fileRef.current?.click()}>
+        <input ref={fileRef} type="file" accept=".csv,.zip" hidden onChange={e => handleFile(e.target.files?.[0])} />
+        <div className="dz-icon">⬇</div>
+        <div style={{ fontWeight: 600 }}>{fileName || 'Trascina qui il file, o tocca per scegliere'}</div>
+        <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>.zip oppure .csv</div>
+      </div>
+
+      {headers.length > 0 && (
+        <>
+          <h2 className="section-title" style={{ fontSize: 20, marginTop: 18 }}>Mappatura colonne</h2>
+          <p className="muted" style={{ fontSize: 12, marginBottom: 10 }}>Ho provato a indovinare. Correggi se serve.</p>
+          {[
+            ['series', 'Titolo serie *'], ['season', 'Stagione'], ['episode', 'Episodio'], ['date', 'Data visione'],
+          ].map(([k, label]) => (
+            <div key={k} style={{ marginBottom: 10 }}>
+              <label className="lbl" style={{ margin: '0 0 4px' }}>{label}</label>
+              <select className="field" value={map[k]} onChange={e => setMap({ ...map, [k]: e.target.value })}>
+                <option value="">— nessuna —</option>
+                {headers.map(h => <option key={h} value={h}>{h}</option>)}
+              </select>
+            </div>
+          ))}
+
+          <button className="btn btn-primary btn-block" style={{ marginTop: 12 }} disabled={running} onClick={runImport}>
+            {running ? `Importo… ${pct}%` : `Importa ${rows.length} righe`}
+          </button>
+
+          {running && <div className="prog" style={{ height: 8, marginTop: 12 }}><i style={{ width: pct + '%' }} /></div>}
+        </>
       )}
 
-      {rows && !results && (
+      {log.length > 0 && (
         <>
-          <h2 className="section-title">Anteprima ({rows.length} righe trovate)</h2>
-          <div className="card" style={{ maxHeight: 320, overflowY: 'auto', marginBottom: 16 }}>
-            {rows.slice(0, 100).map((r, i) => (
-              <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px', borderBottom: '1px solid rgba(108,112,134,0.15)', fontSize: 13 }}>
-                <span>{r[columns.titleCol]}</span>
-                <span style={{ color: 'var(--subtext)' }}>{r[columns.statusCol] || '—'}</span>
-              </div>
+          <h2 className="section-title" style={{ fontSize: 20, marginTop: 18 }}>Log</h2>
+          <div className="import-log">
+            {log.map(l => (
+              <div key={l.id} className={'log-line ' + l.type}>{l.msg}</div>
             ))}
-            {rows.length > 100 && (
-              <div style={{ padding: 12, fontSize: 12, color: 'var(--subtext)', textAlign: 'center' }}>
-                ...e altre {rows.length - 100} righe
-              </div>
-            )}
           </div>
-
-          {importing ? (
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 6 }}>
-                <span>Importazione in corso: {progress.name}</span>
-                <span>{progress.current}/{progress.total}</span>
-              </div>
-              <div className="progress-track">
-                <div className="progress-fill" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button className="btn secondary" onClick={() => { setRows(null); setColumns(null) }}>Annulla</button>
-              <button className="btn block" onClick={runImport}>Importa {rows.length} serie</button>
-            </div>
-          )}
         </>
       )}
 
-      {results && (
-        <>
-          <h2 className="section-title">Risultati import</h2>
-          <div className="grid-2" style={{ marginBottom: 16 }}>
-            <div className="card" style={{ padding: 12, textAlign: 'center' }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--green)' }}>{results.success.length}</div>
-              <div style={{ fontSize: 11, color: 'var(--subtext)' }}>Importate</div>
-            </div>
-            <div className="card" style={{ padding: 12, textAlign: 'center' }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--red)' }}>{results.errors.length + results.skipped.length}</div>
-              <div style={{ fontSize: 11, color: 'var(--subtext)' }}>Errori / saltate</div>
-            </div>
-          </div>
-
-          {(results.errors.length > 0 || results.skipped.length > 0) && (
-            <div className="card" style={{ padding: 12, maxHeight: 240, overflowY: 'auto', marginBottom: 16 }}>
-              {[...results.errors, ...results.skipped].map((line, i) => (
-                <div key={i} style={{ fontSize: 12, color: 'var(--red)', padding: '4px 0' }}>{line}</div>
-              ))}
-            </div>
-          )}
-
-          <button className="btn block" onClick={() => { setRows(null); setColumns(null); setResults(null) }}>Importa un altro file</button>
-        </>
-      )}
+      <style>{`
+        .dropzone { border: 2px dashed var(--surface2); padding: 30px 16px; text-align: center; cursor: pointer; background: var(--mantle); transition: border-color .15s; }
+        .dropzone:active { border-color: var(--mauve); }
+        .dz-icon { font-size: 30px; color: var(--mauve); margin-bottom: 8px; }
+        .import-log { background: var(--mantle); border: 1px solid var(--surface1); max-height: 300px; overflow-y: auto; padding: 8px; }
+        .log-line { font-size: 12px; padding: 4px 6px; border-bottom: 1px solid var(--surface0); font-family: ui-monospace, monospace; word-break: break-word; }
+        .log-line.success { color: var(--green); }
+        .log-line.error { color: var(--red); }
+        .log-line.info { color: var(--subtext); }
+      `}</style>
     </div>
   )
 }

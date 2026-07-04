@@ -1,198 +1,192 @@
-import { EMOTIONS, MEDIA_TYPES, STATUSES } from './tmdb'
+// =====================================================================
+// Formula ore/episodi — INEQUIVOCABILE (brief sez. 8)
+//   moltiplicatore_stagione = 1 + season_tracking.watch_count   (0 se assente -> 1)
+//   ore_episodio  = (episode_runtime_minuti * moltiplicatore) / 60
+//   ore_totali    = somma su tutti gli episodi visti
+//   episodi_con_rewatch = somma dei moltiplicatori su tutti gli episodi visti
+// La barra di progresso NON usa il moltiplicatore (misura copertura, non tempo).
+// =====================================================================
 
-const MONTH_LABELS = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
+const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
 
-function fmtDDMM(d) {
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`
+function seasonMultiplierMap(seasons) {
+  const m = {}
+  for (const s of seasons) {
+    m[`${s.tmdb_show_id}:${s.season_number}`] = 1 + (s.watch_count || 0)
+  }
+  return m
+}
+export function multiplierFor(seasonMap, showId, seasonNumber) {
+  return seasonMap[`${showId}:${seasonNumber}`] ?? 1
 }
 
-function startOfWeek(date) {
-  const d = new Date(date)
-  const day = (d.getDay() + 6) % 7 // lunedì = 0
-  d.setDate(d.getDate() - day)
-  d.setHours(0, 0, 0, 0)
-  return d
+// Bucket temporale
+function bucketKey(dateStr, gran) {
+  const d = new Date(dateStr + 'T00:00:00')
+  if (Number.isNaN(d.getTime())) return null
+  const y = d.getFullYear()
+  const mo = String(d.getMonth() + 1).padStart(2, '0')
+  if (gran === 'anni') return `${y}`
+  if (gran === 'mesi') return `${y}-${mo}`
+  if (gran === 'settimane') {
+    // settimana ISO (giovedì determina l'anno)
+    const t = new Date(d); t.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7))
+    const week1 = new Date(t.getFullYear(), 0, 4)
+    const wk = 1 + Math.round(((t - week1) / 86400000 - 3 + ((week1.getDay() + 6) % 7)) / 7)
+    return `${t.getFullYear()}-W${String(wk).padStart(2, '0')}`
+  }
+  return `${y}-${mo}-${String(d.getDate()).padStart(2, '0')}` // giorni
 }
 
-export function computeStats({ shows, episodes, episodeDetails, seasonTracking }) {
-  shows = shows || []
-  episodes = episodes || []
-  episodeDetails = episodeDetails || []
-  seasonTracking = seasonTracking || []
-
-  const showByTmdbId = Object.fromEntries(shows.map(s => [s.tmdb_id, s]))
-  const seasonMap = Object.fromEntries(seasonTracking.map(s => [`${s.tmdb_show_id}-${s.season_number}`, s]))
-
-  // Moltiplicatore di stagione: 1 (prima visione) + numero di rewatch registrati
-  function seasonMultiplier(tmdbShowId, seasonNumber) {
-    const row = seasonMap[`${tmdbShowId}-${seasonNumber}`]
-    return 1 + (row?.watch_count || 0)
+export function buildTimeSeries(episodes, runtimeByShow, seasonMap, gran) {
+  const acc = {}
+  for (const ep of episodes) {
+    if (!ep.watched_at) continue
+    const key = bucketKey(ep.watched_at, gran)
+    if (!key) continue
+    const rt = runtimeByShow[ep.tmdb_show_id] || 0
+    const mult = multiplierFor(seasonMap, ep.tmdb_show_id, ep.season_number)
+    acc[key] = (acc[key] || 0) + (rt * mult) / 60
   }
-  function episodeHours(ep) {
-    const show = showByTmdbId[ep.tmdb_show_id]
-    const runtime = show?.episode_runtime || 30
-    return (runtime * seasonMultiplier(ep.tmdb_show_id, ep.season_number)) / 60
+  return Object.entries(acc)
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([label, ore]) => ({ label, ore: Math.round(ore * 10) / 10 }))
+}
+
+export function computeStats(shows, episodes, details, seasons) {
+  const seasonMap = seasonMultiplierMap(seasons)
+  const runtimeByShow = {}
+  const typeByShow = {}
+  for (const s of shows) {
+    runtimeByShow[s.tmdb_id] = s.episode_runtime || 0
+    typeByShow[s.tmdb_id] = s.show_type || 'serie'
   }
 
-  // Ore totali guardate (moltiplicate per i rewatch di stagione)
-  const totalHoursExact = episodes.reduce((sum, ep) => sum + episodeHours(ep), 0)
-  const totalHours = Math.round(totalHoursExact)
+  // --- ore totali + episodi con rewatch ---
+  let oreTotali = 0
+  let episodiConRewatch = 0
+  for (const ep of episodes) {
+    const rt = runtimeByShow[ep.tmdb_show_id] || 0
+    const mult = multiplierFor(seasonMap, ep.tmdb_show_id, ep.season_number)
+    oreTotali += (rt * mult) / 60
+    episodiConRewatch += mult
+  }
 
-  // Episodi visti in totale, incluse le rivisioni di stagione
-  const totalEpisodeViews = Math.round(
-    episodes.reduce((sum, ep) => sum + seasonMultiplier(ep.tmdb_show_id, ep.season_number), 0)
-  )
+  // --- giorni di visione (date distinte) ---
+  const giorni = new Set(episodes.map(e => e.watched_at).filter(Boolean)).size
 
-  // Giorni di visione: date distinte in cui è stato completato almeno un episodio
-  const watchDays = new Set(episodes.map(e => (e.watched_at || '').slice(0, 10)).filter(Boolean))
-
-  // Episodi questo mese (visione più recente per episodio, non moltiplicata)
+  // --- episodi questo mese (conteggio grezzo) ---
   const now = new Date()
-  const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
-  const episodesThisMonth = episodes.filter(e => (e.watched_at || '').slice(0, 7) === thisMonthKey).length
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const episodiMese = episodes.filter(e => (e.watched_at || '').startsWith(ym)).length
 
-  // Voto medio episodi /10
-  const epRatings = episodeDetails.map(d => d.rating).filter(r => r > 0)
-  const avgEpisodeRating = epRatings.length > 0 ? (epRatings.reduce((a, b) => a + b, 0) / epRatings.length) * 2 : null
+  // --- stagioni riviste ---
+  const stagioniRiviste = seasons.filter(s => (s.watch_count || 0) > 0)
+  const stagioniRivisteCount = stagioniRiviste.length
+  const rivisioniTotali = stagioniRiviste.reduce((a, s) => a + (s.watch_count || 0), 0)
 
-  // Episodi per mese (ultimi 12) — conteggio grezzo, non moltiplicato
-  const monthBuckets = []
+  // --- voto medio episodi (base 10) ---
+  const epRatings = details.map(d => d.rating).filter(r => r != null)
+  const votoMedioEp = epRatings.length
+    ? Math.round((epRatings.reduce((a, b) => a + b, 0) / epRatings.length) * 10) / 10
+    : null
+
+  // --- episodi per mese (ultimi 12, grezzo) ---
+  const mesiKeys = []
   for (let i = 11; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    monthBuckets.push({ key, label: MONTH_LABELS[d.getMonth()], count: 0 })
+    mesiKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
   }
-  const monthIndex = Object.fromEntries(monthBuckets.map((b, i) => [b.key, i]))
-  episodes.forEach(e => {
-    const key = (e.watched_at || '').slice(0, 7)
-    if (key in monthIndex) monthBuckets[monthIndex[key]].count += 1
-  })
-
-  // --- Serie temporali delle ore guardate (giorni / settimane / mesi / anni) ---
-  // Nota: i rewatch di stagione non hanno una data propria (solo un contatore),
-  // quindi le ore aggiuntive dovute ai rewatch vengono attribuite alla data
-  // dell'ultima visione registrata per l'episodio: è una stima, non un log preciso.
-  const daily = []
-  for (let i = 29; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)
-    daily.push({ key: d.toISOString().slice(0, 10), label: fmtDDMM(d), hours: 0 })
+  const epMeseMap = {}
+  for (const e of episodes) {
+    const k = (e.watched_at || '').slice(0, 7)
+    if (k) epMeseMap[k] = (epMeseMap[k] || 0) + 1
   }
-  const dailyIndex = Object.fromEntries(daily.map((b, i) => [b.key, i]))
-
-  const weekly = []
-  const thisWeekStart = startOfWeek(now)
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(thisWeekStart)
-    d.setDate(d.getDate() - i * 7)
-    weekly.push({ key: d.toISOString().slice(0, 10), label: fmtDDMM(d), hours: 0 })
-  }
-  const weeklyIndex = Object.fromEntries(weekly.map((b, i) => [b.key, i]))
-
-  const monthlyHours = monthBuckets.map(b => ({ key: b.key, label: b.label, hours: 0 }))
-  const monthlyHoursIndex = Object.fromEntries(monthlyHours.map((b, i) => [b.key, i]))
-
-  const yearsSet = new Set(episodes.map(e => (e.watched_at || '').slice(0, 4)).filter(Boolean))
-  const years = Array.from(yearsSet).sort()
-  const yearly = years.map(y => ({ key: y, label: y, hours: 0 }))
-  const yearlyIndex = Object.fromEntries(yearly.map((b, i) => [b.key, i]))
-
-  episodes.forEach(ep => {
-    const dateStr = (ep.watched_at || '').slice(0, 10)
-    if (!dateStr) return
-    const hrs = episodeHours(ep)
-
-    if (dateStr in dailyIndex) daily[dailyIndex[dateStr]].hours += hrs
-    const wKey = startOfWeek(new Date(dateStr)).toISOString().slice(0, 10)
-    if (wKey in weeklyIndex) weekly[weeklyIndex[wKey]].hours += hrs
-    const mKey = dateStr.slice(0, 7)
-    if (mKey in monthlyHoursIndex) monthlyHours[monthlyHoursIndex[mKey]].hours += hrs
-    const yKey = dateStr.slice(0, 4)
-    if (yKey in yearlyIndex) yearly[yearlyIndex[yKey]].hours += hrs
-  })
-
-  const round1 = (arr) => arr.map(b => ({ ...b, hours: Math.round(b.hours * 10) / 10 }))
-  const hoursSeries = {
-    daily: round1(daily),
-    weekly: round1(weekly),
-    monthly: round1(monthlyHours),
-    yearly: round1(yearly)
-  }
-
-  // Serie per tipologia
-  const typeCount = { tv: 0, anime: 0, cartoon: 0 }
-  shows.forEach(s => { typeCount[s.media_type] = (typeCount[s.media_type] || 0) + 1 })
-  const typeData = MEDIA_TYPES.map(t => ({ name: t.label, value: typeCount[t.value] || 0 })).filter(d => d.value > 0)
-
-  // Generi più visti (top 8)
-  const genreCount = {}
-  shows.forEach(s => {
-    const genres = s.genres ? JSON.parse(s.genres) : []
-    genres.forEach(g => { genreCount[g] = (genreCount[g] || 0) + 1 })
-  })
-  const genreData = Object.entries(genreCount)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8)
-
-  // Voti serie 1-10
-  const showRatingBuckets = Array.from({ length: 10 }, (_, i) => ({ name: String(i + 1), count: 0 }))
-  shows.forEach(s => { if (s.rating >= 1 && s.rating <= 10) showRatingBuckets[Math.round(s.rating) - 1].count += 1 })
-
-  // Voti episodi 1-5
-  const episodeRatingBuckets = Array.from({ length: 5 }, (_, i) => ({ name: String(i + 1), count: 0 }))
-  episodeDetails.forEach(d => { if (d.rating >= 1 && d.rating <= 5) episodeRatingBuckets[d.rating - 1].count += 1 })
-
-  // Emozioni (top 8)
-  const emotionCount = {}
-  episodeDetails.forEach(d => {
-    const emotions = d.emotions ? JSON.parse(d.emotions) : []
-    emotions.forEach(id => { emotionCount[id] = (emotionCount[id] || 0) + 1 })
-  })
-  const emotionData = Object.entries(emotionCount)
-    .map(([id, count]) => {
-      const meta = EMOTIONS.find(e => e.id === id)
-      return { id, emoji: meta?.emoji || '❓', label: meta?.label || id, count }
-    })
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 8)
-
-  // Piattaforme più usate (top 6): combina piattaforma episodio + piattaforma principale show
-  const platformCount = {}
-  episodeDetails.forEach(d => { if (d.platform) platformCount[d.platform] = (platformCount[d.platform] || 0) + 1 })
-  shows.forEach(s => { if (s.main_platform) platformCount[s.main_platform] = (platformCount[s.main_platform] || 0) + 1 })
-  const platformData = Object.entries(platformCount)
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6)
-
-  // Progresso per stato
-  const statusCount = {}
-  shows.forEach(s => { statusCount[s.status] = (statusCount[s.status] || 0) + 1 })
-  const statusData = STATUSES.map(s => ({
-    ...s,
-    count: statusCount[s.value] || 0,
-    pct: shows.length > 0 ? Math.round(((statusCount[s.value] || 0) / shows.length) * 100) : 0
+  const episodiPerMese = mesiKeys.map(k => ({
+    label: k.slice(5) + '/' + k.slice(2, 4),
+    episodi: epMeseMap[k] || 0,
   }))
 
-  // Top 5 serie meglio votate
-  const topRated = shows.filter(s => s.rating > 0).sort((a, b) => b.rating - a.rating).slice(0, 5)
+  // --- torta tipologie ---
+  const typeCount = { serie: 0, anime: 0, cartone: 0 }
+  for (const s of shows) typeCount[s.show_type || 'serie'] = (typeCount[s.show_type || 'serie'] || 0) + 1
+  const perTipologia = [
+    { name: 'Serie TV', value: typeCount.serie, key: 'serie' },
+    { name: 'Anime', value: typeCount.anime, key: 'anime' },
+    { name: 'Cartoni', value: typeCount.cartone, key: 'cartone' },
+  ].filter(x => x.value > 0)
+
+  // --- generi più visti (top 8) ---
+  const genreCount = {}
+  for (const s of shows) {
+    for (const g of parseArr(s.genres)) genreCount[g] = (genreCount[g] || 0) + 1
+  }
+  const generiTop = Object.entries(genreCount)
+    .sort((a, b) => b[1] - a[1]).slice(0, 8)
+    .map(([name, value]) => ({ name, value }))
+
+  // --- 3 istogrammi voti (1..10) ---
+  const emptyHist = () => Array.from({ length: 10 }, (_, i) => ({ voto: i + 1, n: 0 }))
+  const histSerie = emptyHist()
+  for (const s of shows) if (s.rating >= 1 && s.rating <= 10) histSerie[s.rating - 1].n++
+
+  const histEp = emptyHist()
+  for (const d of details) if (d.rating >= 1 && d.rating <= 10) histEp[d.rating - 1].n++
+
+  // media voti episodi PER serie
+  const perShowEp = {}
+  for (const d of details) {
+    if (d.rating == null) continue
+    ;(perShowEp[d.tmdb_show_id] ||= []).push(d.rating)
+  }
+  const histMedieSerie = emptyHist()
+  for (const arr of Object.values(perShowEp)) {
+    const avg = arr.reduce((a, b) => a + b, 0) / arr.length
+    const bucket = Math.min(10, Math.max(1, Math.round(avg)))
+    histMedieSerie[bucket - 1].n++
+  }
+
+  // --- emozioni (top 8) ---
+  const emoCount = {}
+  for (const d of details) for (const e of parseArr(d.emotions)) emoCount[e] = (emoCount[e] || 0) + 1
+  const emozioniTop = Object.entries(emoCount)
+    .sort((a, b) => b[1] - a[1]).slice(0, 8)
+    .map(([emoji, n]) => ({ emoji, n }))
+
+  // --- piattaforme (top 6): episodio + principale show ---
+  const platCount = {}
+  for (const d of details) if (d.platform) platCount[d.platform] = (platCount[d.platform] || 0) + 1
+  for (const s of shows) if (s.main_platform) platCount[s.main_platform] = (platCount[s.main_platform] || 0) + 1
+  const piattaformeTop = Object.entries(platCount)
+    .sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([name, value]) => ({ name, value }))
+
+  // --- barre per stato ---
+  const statusCount = {}
+  for (const s of shows) statusCount[s.status] = (statusCount[s.status] || 0) + 1
+
+  // --- top 5 serie meglio votate ---
+  const top5 = [...shows].filter(s => s.rating != null)
+    .sort((a, b) => b.rating - a.rating).slice(0, 5)
 
   return {
-    totalHours,
-    totalEpisodeViews,
-    watchDays: watchDays.size,
-    totalShows: shows.length,
-    episodesThisMonth,
-    avgEpisodeRating,
-    monthBuckets,
-    hoursSeries,
-    typeData,
-    genreData,
-    showRatingBuckets,
-    episodeRatingBuckets,
-    emotionData,
-    platformData,
-    statusData,
-    topRated
+    oreTotali: Math.round(oreTotali * 10) / 10,
+    giorni,
+    serieTotali: shows.length,
+    episodiMese,
+    episodiConRewatch: Math.round(episodiConRewatch),
+    episodiVistiGrezzi: episodes.length,
+    stagioniRivisteCount,
+    rivisioniTotali,
+    votoMedioEp,
+    episodiPerMese,
+    perTipologia,
+    generiTop,
+    histSerie, histEp, histMedieSerie,
+    emozioniTop,
+    piattaformeTop,
+    statusCount,
+    top5,
+    runtimeByShow, seasonMap,
   }
 }

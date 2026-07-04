@@ -1,131 +1,131 @@
 import { useEffect, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
-import { posterUrl } from '../lib/tmdb'
+import { Loader, Empty, Poster } from '../components/ui'
+import StatsPanel from '../components/StatsPanel'
+import { SocialIcon } from '../components/SocialIcon'
 import { computeStats } from '../lib/stats'
-import StatsCharts from '../components/StatsCharts'
-import Spinner from '../components/Spinner'
 
 export default function PublicProfile() {
   const { username } = useParams()
-  const [profile, setProfile] = useState(undefined)
-  const [favorites, setFavorites] = useState([])
-  const [stats, setStats] = useState(null)
-  const [showStats, setShowStats] = useState(false)
+  const nav = useNavigate()
+  const [loading, setLoading] = useState(true)
+  const [profile, setProfile] = useState(null)
+  const [notFound, setNotFound] = useState(false)
+  const [data, setData] = useState({ shows: [], episodes: [], seasons: [], favs: [] })
+  const [tab, setTab] = useState('preferite')
 
   useEffect(() => {
-    let cancelled = false
-    async function load() {
-      const { data: profileData } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('username', username)
-        .eq('is_public', true)
-        .maybeSingle()
-
-      if (cancelled) return
-      setProfile(profileData || null)
-      if (!profileData) return
-
-      const [{ data: favs }, { data: shows }, { data: seasonTracking }, { data: episodes }] = await Promise.all([
-        supabase.from('user_favorites').select('*').eq('user_id', profileData.id).order('position'),
-        supabase.from('user_shows').select('*').eq('user_id', profileData.id),
-        supabase.from('season_tracking').select('*').eq('user_id', profileData.id),
-        supabase.from('user_episodes').select('*').eq('user_id', profileData.id)
+    let on = true
+    ;(async () => {
+      setLoading(true)
+      const { data: prof } = await supabase.from('user_profiles').select('*').eq('username', username).eq('is_public', true).maybeSingle()
+      if (!on) return
+      if (!prof) { setNotFound(true); setLoading(false); return }
+      setProfile(prof)
+      const [shows, eps, seas, favs] = await Promise.all([
+        supabase.from('user_shows').select('*').eq('user_id', prof.id),
+        supabase.from('user_episodes').select('*').eq('user_id', prof.id),
+        supabase.from('season_tracking').select('*').eq('user_id', prof.id),
+        supabase.from('user_favorites').select('*').eq('user_id', prof.id).order('position'),
       ])
-      if (cancelled) return
-      setFavorites(favs || [])
-      setStats(computeStats({ shows: shows || [], episodes: episodes || [], episodeDetails: [], seasonTracking: seasonTracking || [] }))
-    }
-    load()
-    return () => { cancelled = true }
+      setData({ shows: shows.data || [], episodes: eps.data || [], seasons: seas.data || [], favs: favs.data || [] })
+      setLoading(false)
+    })()
+    return () => { on = false }
   }, [username])
 
-  if (profile === undefined) return <Spinner label="Caricamento profilo..." />
-
-  if (profile === null) {
-    return (
-      <div className="page">
-        <div className="empty-state">
-          <h3>Profilo non trovato</h3>
-          <p>Questo profilo non esiste oppure è privato.</p>
-        </div>
+  if (loading) return <div className="app-shell"><Loader /></div>
+  if (notFound) return (
+    <div className="app-shell" style={{ paddingBottom: 0 }}>
+      <div className="page page-pad-top">
+        <Empty title="Profilo non disponibile">Questo profilo non esiste o è privato.</Empty>
+        <button className="btn btn-primary btn-block" onClick={() => nav('/')}>Vai a MyTrackList</button>
       </div>
-    )
-  }
+    </div>
+  )
 
-  const completedCount = stats?.statusData?.find(s => s.value === 'completed')?.count ?? 0
+  const stats = computeStats(data.shows, data.episodes, [], data.seasons)
+  const completate = data.shows.filter(s => s.status === 'completata').length
 
   return (
-    <div className="page" style={{ padding: 0, paddingBottom: 40 }}>
-      <div style={{ height: 140, background: 'var(--surface)', overflow: 'hidden' }}>
-        {profile.banner_url && <img src={profile.banner_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+    <div style={{ maxWidth: 640, margin: '0 auto', minHeight: '100vh', paddingBottom: 40 }}>
+      <div className="ppf-banner" style={{ height: 170 }}>
+        {profile.banner_url ? <img src={profile.banner_url} alt="" /> : <div className="ppf-banner-grad" />}
       </div>
 
-      <div style={{ padding: '0 16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: -42, marginBottom: 12 }}>
-          <div className="gold-border" style={{ width: 84, height: 84, overflow: 'hidden', background: 'var(--surface)' }}>
-            {profile.avatar_url && <img src={profile.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+      <div className="page" style={{ paddingTop: 0, marginTop: -44, position: 'relative', zIndex: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, marginBottom: 12 }}>
+          <div className="ppf-avatar">
+            {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : <div className="ppf-avatar-ph">{(profile.display_name || profile.username)[0]?.toUpperCase()}</div>}
+          </div>
+          <div style={{ flex: 1, paddingBottom: 4 }}>
+            <h1 style={{ fontSize: 26, lineHeight: 1 }}>{profile.display_name || profile.username}</h1>
+            <div className="muted" style={{ fontSize: 13 }}>@{profile.username}</div>
           </div>
         </div>
 
-        <div style={{ textAlign: 'center', marginBottom: 16 }}>
-          <h1 style={{ fontSize: 24 }}>{profile.display_name || profile.username}</h1>
-          <div style={{ fontSize: 13, color: 'var(--subtext)' }}>@{profile.username}</div>
-          {profile.bio && <p style={{ fontSize: 13, marginTop: 8, color: 'var(--text)' }}>{profile.bio}</p>}
-          {profile.note && <p style={{ fontSize: 12, marginTop: 4, color: 'var(--subtext)', fontStyle: 'italic' }}>{profile.note}</p>}
+        {profile.bio && <p style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>{profile.bio}</p>}
+        {profile.note && <p className="subtext" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 10 }}>{profile.note}</p>}
 
-          {(profile.social_tvtime || profile.social_mal || profile.social_imdb) && (
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-              {profile.social_tvtime && <a href={profile.social_tvtime} target="_blank" rel="noreferrer" className="chip">TVTime</a>}
-              {profile.social_mal && <a href={profile.social_mal} target="_blank" rel="noreferrer" className="chip">MyAnimeList</a>}
-              {profile.social_imdb && <a href={profile.social_imdb} target="_blank" rel="noreferrer" className="chip">IMDb</a>}
-            </div>
-          )}
-        </div>
-
-        {stats && (
-          <div className="grid-2" style={{ marginBottom: 24 }}>
-            <div className="card" style={{ padding: 12, textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--mauve)' }}>{stats.totalHours}h</div>
-              <div style={{ fontSize: 10, color: 'var(--subtext)' }}>Ore</div>
-            </div>
-            <div className="card" style={{ padding: 12, textAlign: 'center' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--mauve)' }}>{stats.totalShows}</div>
-              <div style={{ fontSize: 10, color: 'var(--subtext)' }}>Serie</div>
-            </div>
-            <div className="card" style={{ padding: 12, textAlign: 'center', gridColumn: '1 / -1' }}>
-              <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--mauve)' }}>{completedCount}</div>
-              <div style={{ fontSize: 10, color: 'var(--subtext)' }}>Completate</div>
-            </div>
+        {(profile.social_tvtime || profile.social_mal || profile.social_imdb) && (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+            {profile.social_tvtime && <a href={profile.social_tvtime} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="tvtime" /></a>}
+            {profile.social_mal && <a href={profile.social_mal} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="mal" /></a>}
+            {profile.social_imdb && <a href={profile.social_imdb} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="imdb" /></a>}
           </div>
         )}
 
-        {favorites.length > 0 && (
-          <>
-            <h2 className="section-title">Preferite</h2>
-            <div className="grid-3x2" style={{ marginBottom: 24 }}>
-              {favorites.map(f => (
-                <div key={f.id} className="card">
-                  <div style={{ aspectRatio: '2/3', overflow: 'hidden', background: 'var(--surface-hover)' }}>
-                    {f.poster_path && <img src={posterUrl(f.poster_path)} alt={f.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                  </div>
+        {/* Strip riepilogo */}
+        <div className="ppf-strip">
+          <div><b>{stats.oreTotali}</b><span>ore</span></div>
+          <div><b>{stats.serieTotali}</b><span>serie</span></div>
+          <div><b>{completate}</b><span>completate</span></div>
+        </div>
+
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--surface1)', margin: '6px 0 14px' }}>
+          <button className={'pf-tab' + (tab === 'preferite' ? ' on' : '')} onClick={() => setTab('preferite')}>Preferite</button>
+          <button className={'pf-tab' + (tab === 'stats' ? ' on' : '')} onClick={() => setTab('stats')}>Statistiche</button>
+        </div>
+
+        {tab === 'preferite' ? (
+          data.favs.length === 0 ? <Empty title="Nessuna preferita" /> : (
+            <div className="fav-grid">
+              {data.favs.slice(0, 6).map(fav => (
+                <div key={fav.tmdb_id} className="fav-cell" onClick={() => nav(`/show/${fav.tmdb_id}`)}>
+                  <Poster path={fav.poster_path} alt={fav.title} width={'100%'} />
                 </div>
               ))}
             </div>
-          </>
+          )
+        ) : (
+          <StatsPanel shows={data.shows} episodes={data.episodes} details={[]} seasons={data.seasons} variant="public" />
         )}
 
-        <button className="btn secondary block" onClick={() => setShowStats(s => !s)} style={{ marginBottom: 16 }}>
-          {showStats ? 'Nascondi statistiche' : 'Mostra statistiche'}
-        </button>
-
-        {showStats && <StatsCharts stats={stats} variant="public" />}
-
-        <div style={{ textAlign: 'center', marginTop: 32, fontFamily: 'var(--font-display)', letterSpacing: '0.1em', color: 'var(--overlay)', fontSize: 13 }}>
-          MYTRACKLIST
+        <div className="ppf-footer">
+          <span style={{ background: 'var(--grad-word)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>MYTRACKLIST</span>
         </div>
       </div>
+
+      <style>{`
+        .ppf-banner { position: relative; overflow: hidden; background: var(--surface0); }
+        .ppf-banner img { width: 100%; height: 100%; object-fit: cover; }
+        .ppf-banner-grad { width: 100%; height: 100%; background: linear-gradient(120deg, var(--mauve-deep), var(--surface0) 60%, var(--pink)); opacity: .5; }
+        .ppf-avatar { width: 88px; height: 88px; flex: 0 0 88px; border: 3px solid var(--gold); overflow: hidden; background: var(--surface1); }
+        .ppf-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .ppf-avatar-ph { width: 100%; height: 100%; display: grid; place-items: center; font-family: var(--f-display); font-size: 40px; color: var(--mauve); }
+        .soc { width: 40px; height: 40px; display: grid; place-items: center; background: var(--surface0); border: 1px solid var(--surface1); }
+        .ppf-strip { display: flex; background: var(--surface0); border: 1px solid var(--surface1); margin-bottom: 14px; }
+        .ppf-strip > div { flex: 1; text-align: center; padding: 12px 6px; border-right: 1px solid var(--surface1); }
+        .ppf-strip > div:last-child { border-right: none; }
+        .ppf-strip b { font-family: var(--f-display); font-size: 26px; color: var(--mauve); display: block; letter-spacing: .02em; }
+        .ppf-strip span { font-size: 11px; color: var(--subtext); }
+        .pf-tab { flex: 1; padding: 10px; font-weight: 600; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+        .pf-tab.on { color: var(--mauve); border-bottom-color: var(--mauve); }
+        .fav-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .fav-cell { cursor: pointer; }
+        .ppf-footer { text-align: center; margin-top: 30px; font-family: var(--f-display); font-size: 22px; letter-spacing: .1em; opacity: .8; }
+      `}</style>
     </div>
   )
 }

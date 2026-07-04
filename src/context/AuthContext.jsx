@@ -1,72 +1,43 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
 
-const AuthContext = createContext(null)
+const AuthCtx = createContext(null)
+export const useAuth = () => useContext(AuthCtx)
 
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  async function loadProfile(userId) {
-    const { data } = await supabase
-      .from('user_profiles')
-      .select('*')
-      .eq('id', userId)
-      .maybeSingle()
-    setProfile(data)
-  }
-
-  async function refreshProfile() {
-    if (session?.user?.id) await loadProfile(session.user.id)
-  }
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session)
-      if (session?.user?.id) loadProfile(session.user.id).finally(() => setLoading(false))
-      else setLoading(false)
-    })
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session)
-      if (session?.user?.id) loadProfile(session.user.id)
-      else setProfile(null)
-    })
-
-    return () => subscription.unsubscribe()
+  const loadProfile = useCallback(async (uid) => {
+    if (!uid) { setProfile(null); return }
+    const { data } = await supabase.from('user_profiles').select('*').eq('id', uid).maybeSingle()
+    setProfile(data || null)
   }, [])
 
-  async function signUp(email, password) {
-    const { error } = await supabase.auth.signUp({ email, password })
-    return { error }
-  }
+  useEffect(() => {
+    let mounted = true
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!mounted) return
+      setSession(data.session)
+      await loadProfile(data.session?.user?.id)
+      setLoading(false)
+    })
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_e, s) => {
+      setSession(s)
+      await loadProfile(s?.user?.id)
+    })
+    return () => { mounted = false; sub.subscription.unsubscribe() }
+  }, [loadProfile])
 
-  async function signIn(email, password) {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    return { error }
-  }
-
-  async function signOut() {
-    await supabase.auth.signOut()
-  }
+  const signIn = (email, password) => supabase.auth.signInWithPassword({ email, password })
+  const signUp = (email, password) => supabase.auth.signUp({ email, password })
+  const signOut = () => supabase.auth.signOut()
+  const refreshProfile = () => loadProfile(session?.user?.id)
 
   const value = {
-    session,
-    user: session?.user ?? null,
-    profile,
-    loading,
-    signUp,
-    signIn,
-    signOut,
-    refreshProfile
+    session, user: session?.user || null, profile, loading,
+    signIn, signUp, signOut, refreshProfile, setProfile,
   }
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth deve essere usato dentro AuthProvider')
-  return ctx
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
 }

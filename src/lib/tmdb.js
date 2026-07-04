@@ -1,110 +1,58 @@
-const API_KEY = import.meta.env.VITE_TMDB_API_KEY
-const BASE_URL = 'https://api.themoviedb.org/3'
-const LANG = 'it-IT'
+const KEY = import.meta.env.VITE_TMDB_API_KEY
+const BASE = 'https://api.themoviedb.org/3'
+export const IMG = 'https://image.tmdb.org/t/p'
 
-async function tmdbFetch(path, params = {}) {
-  const url = new URL(BASE_URL + path)
-  url.searchParams.set('api_key', API_KEY)
-  url.searchParams.set('language', LANG)
-  Object.entries(params).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v)
-  })
-  const res = await fetch(url.toString())
+export const posterUrl = (p, size = 'w342') => (p ? `${IMG}/${size}${p}` : null)
+export const backdropUrl = (p, size = 'w780') => (p ? `${IMG}/${size}${p}` : null)
+export const profileUrl = (p, size = 'w185') => (p ? `${IMG}/${size}${p}` : null)
+
+async function tmdb(path, params = {}) {
+  if (!KEY) throw new Error('VITE_TMDB_API_KEY non impostata: la ricerca TMDB non può funzionare.')
+  const q = new URLSearchParams({ api_key: KEY, language: 'it-IT', ...params })
+  const res = await fetch(`${BASE}${path}?${q}`)
   if (!res.ok) {
-    throw new Error(`Errore TMDB (${res.status}) su ${path}`)
+    let detail = ''
+    try { detail = (await res.json())?.status_message || '' } catch {}
+    throw new Error(`TMDB ${res.status}${detail ? ': ' + detail : ''} (${path})`)
   }
   return res.json()
 }
 
-export function posterUrl(path, size = 'w342') {
-  if (!path) return null
-  return `https://image.tmdb.org/t/p/${size}${path}`
+export const searchTv = (query, page = 1) =>
+  tmdb('/search/tv', { query, page, include_adult: 'false' }).then(d => d.results || [])
+
+export const discoverByGenre = (genreId, page = 1) =>
+  tmdb('/discover/tv', { with_genres: genreId, sort_by: 'popularity.desc', page }).then(d => d.results || [])
+
+export const trendingTv = () =>
+  tmdb('/trending/tv/week').then(d => d.results || [])
+
+export const getShow = (id) =>
+  tmdb(`/tv/${id}`, { append_to_response: 'aggregate_credits,external_ids' })
+
+export const getSeason = (id, seasonNumber) =>
+  tmdb(`/tv/${id}/season/${seasonNumber}`)
+
+export const getEpisodeCredits = (id, s, e) =>
+  tmdb(`/tv/${id}/season/${s}/episode/${e}/credits`).catch(() => ({ cast: [], guest_stars: [] }))
+
+// durata media episodio in minuti (TMDB.episode_run_time è un array)
+export const avgRuntime = (show) => {
+  const arr = show?.episode_run_time || []
+  if (!arr.length) return null
+  return Math.round(arr.reduce((a, b) => a + b, 0) / arr.length)
+}
+export const runtimeRange = (show) => {
+  const arr = (show?.episode_run_time || []).filter(Boolean)
+  if (!arr.length) return null
+  const min = Math.min(...arr), max = Math.max(...arr)
+  return min === max ? `~${min}min` : `~${min}–${max}min`
 }
 
-export function backdropUrl(path, size = 'w780') {
-  if (!path) return null
-  return `https://image.tmdb.org/t/p/${size}${path}`
+export const yearOf = (show) => {
+  const d = show?.first_air_date
+  return d ? parseInt(d.slice(0, 4), 10) : null
 }
 
-export function profileUrl(path, size = 'w185') {
-  if (!path) return null
-  return `https://image.tmdb.org/t/p/${size}${path}`
-}
-
-// --- Ricerca e discover ---
-
-export function searchTv(query, page = 1) {
-  return tmdbFetch('/search/tv', { query, page, include_adult: false })
-}
-
-export function discoverByGenre(genreId, page = 1) {
-  return tmdbFetch('/discover/tv', { with_genres: genreId, page, sort_by: 'popularity.desc' })
-}
-
-export function getTrending() {
-  return tmdbFetch('/trending/tv/week')
-}
-
-export function getGenres() {
-  return tmdbFetch('/genre/tv/list')
-}
-
-// --- Dettaglio show ---
-
-export function getShowDetails(tmdbId) {
-  return tmdbFetch(`/tv/${tmdbId}`, { append_to_response: 'aggregate_credits' })
-}
-
-export function getSeasonDetails(tmdbId, seasonNumber) {
-  return tmdbFetch(`/tv/${tmdbId}/season/${seasonNumber}`)
-}
-
-export function getEpisodeCredits(tmdbId, seasonNumber, episodeNumber) {
-  return tmdbFetch(`/tv/${tmdbId}/season/${seasonNumber}/episode/${episodeNumber}/credits`)
-}
-
-// Genera un URL medio-formattato per la durata episodi (es. "~24min" o "~24-45min")
-export function formatRuntime(runtimes) {
-  if (!runtimes || runtimes.length === 0) return null
-  const min = Math.min(...runtimes)
-  const max = Math.max(...runtimes)
-  if (min === max) return `~${min}min`
-  return `~${min}-${max}min`
-}
-
-export const EMOTIONS = [
-  { id: 'adorato', emoji: '😍', label: 'Adorato' },
-  { id: 'amato', emoji: '❤️', label: 'Amato' },
-  { id: 'epico', emoji: '🔥', label: 'Epico' },
-  { id: 'mindblown', emoji: '🤯', label: 'Mind-blown' },
-  { id: 'divertente', emoji: '😂', label: 'Divertente' },
-  { id: 'sorpresa', emoji: '😮', label: 'Sorpresa' },
-  { id: 'commovente', emoji: '😢', label: 'Commovente' },
-  { id: 'devastante', emoji: '💀', label: 'Devastante' },
-  { id: 'frustrante', emoji: '😡', label: 'Frustrante' },
-  { id: 'noioso', emoji: '😴', label: 'Noioso' },
-  { id: 'riflessivo', emoji: '🤔', label: 'Riflessivo' },
-  { id: 'solido', emoji: '👌', label: 'Solido' }
-]
-
-export const PLATFORMS = [
-  'Netflix', 'Prime Video', 'Disney+', 'Apple TV+', 'Crunchyroll',
-  'VVVVID', 'RaiPlay', 'Paramount+', 'TIMVision', 'YouTube',
-  'Chili', 'Pirateria', 'Altro'
-]
-
-export const DEVICES = ['TV', 'PC', 'Smartphone', 'Tablet']
-
-export const STATUSES = [
-  { value: 'watching', label: 'In corso' },
-  { value: 'completed', label: 'Completata' },
-  { value: 'planned', label: 'Da vedere' },
-  { value: 'paused', label: 'In pausa' },
-  { value: 'dropped', label: 'Abbandonata' }
-]
-
-export const MEDIA_TYPES = [
-  { value: 'tv', label: 'Serie TV' },
-  { value: 'anime', label: 'Anime' },
-  { value: 'cartoon', label: 'Cartone' }
-]
+// genere principale it-IT -> array di soli nomi (per stats)
+export const genreNames = (show) => (show?.genres || []).map(g => g.name)

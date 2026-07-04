@@ -1,136 +1,88 @@
 import { useEffect, useState, useMemo } from 'react'
-import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { STATUSES, MEDIA_TYPES } from '../lib/tmdb'
-import ShowCard from '../components/ShowCard'
-import Spinner from '../components/Spinner'
+import { listShows, listFavorites, addFavorite, removeFavorite } from '../lib/db'
+import { supabase } from '../lib/supabase'
+import { STATUSES, SHOW_TYPES, GENRES } from '../lib/constants'
+import { LibraryCard } from '../components/cards'
+import { Loader, Empty } from '../components/ui'
 
-const GENRES = [
-  'Dramma', 'Commedia', 'Crime', 'Sci-Fi & Fantasy', 'Mistero',
-  'Azione & Avventura', 'Animazione', 'Famiglia', 'Western',
-  'Documentario', 'Per Bambini', 'Guerra & Politica'
-]
+const STATUS_TABS = [{ key: 'tutto', label: 'Tutto' }, ...STATUSES.map(s => ({ key: s.key, label: s.label }))]
 
 export default function Library() {
   const { user } = useAuth()
-  const { showToast } = useToast()
-  const [shows, setShows] = useState([])
-  const [episodeCounts, setEpisodeCounts] = useState({})
-  const [favorites, setFavorites] = useState(new Set())
+  const toast = useToast()
   const [loading, setLoading] = useState(true)
-  const [status, setStatus] = useState('all')
-  const [type, setType] = useState('all')
+  const [shows, setShows] = useState([])
+  const [counts, setCounts] = useState({})
+  const [favIds, setFavIds] = useState(new Set())
+  const [status, setStatus] = useState('tutto')
+  const [type, setType] = useState('tutti')
   const [genre, setGenre] = useState(null)
 
-  useEffect(() => {
-    if (!user) return
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      const [showsRes, favRes] = await Promise.all([
-        supabase.from('user_shows').select('*').eq('user_id', user.id).order('updated_at', { ascending: false }),
-        supabase.from('user_favorites').select('tmdb_id').eq('user_id', user.id)
-      ])
-      if (cancelled) return
-      const list = showsRes.data || []
-      setShows(list)
-      setFavorites(new Set((favRes.data || []).map(f => f.tmdb_id)))
+  const load = async () => {
+    try {
+      const [s, favs] = await Promise.all([listShows(user.id), listFavorites(user.id)])
+      setShows(s)
+      setFavIds(new Set(favs.map(f => f.tmdb_id)))
+      const { data: eps } = await supabase.from('user_episodes').select('tmdb_show_id').eq('user_id', user.id)
+      const c = {}
+      for (const e of (eps || [])) c[e.tmdb_show_id] = (c[e.tmdb_show_id] || 0) + 1
+      setCounts(c)
+    } catch (e) { toast.error(e.message) }
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [user.id])
 
-      if (list.length > 0) {
-        const { data: episodes } = await supabase
-          .from('user_episodes')
-          .select('tmdb_show_id')
-          .eq('user_id', user.id)
-          .in('tmdb_show_id', list.map(s => s.tmdb_id))
-        const counts = {}
-        ;(episodes || []).forEach(e => { counts[e.tmdb_show_id] = (counts[e.tmdb_show_id] || 0) + 1 })
-        if (!cancelled) setEpisodeCounts(counts)
+  const toggleFav = async (show) => {
+    const isFav = favIds.has(show.tmdb_id)
+    try {
+      if (isFav) { await removeFavorite(user.id, show.tmdb_id); setFavIds(p => { const n = new Set(p); n.delete(show.tmdb_id); return n }) }
+      else {
+        if (favIds.size >= 6) return toast.error('Massimo 6 serie preferite. Rimuovine una dal profilo.')
+        await addFavorite(user.id, { tmdb_id: show.tmdb_id, title: show.title, poster_path: show.poster_path }, favIds.size)
+        setFavIds(p => new Set(p).add(show.tmdb_id))
       }
-      if (!cancelled) setLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [user])
-
-  async function toggleFavorite(show) {
-    if (!user) return
-    const isFav = favorites.has(show.tmdb_id)
-    if (isFav) {
-      await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', show.tmdb_id)
-      setFavorites(prev => { const s = new Set(prev); s.delete(show.tmdb_id); return s })
-    } else {
-      if (favorites.size >= 6) {
-        showToast('Puoi avere al massimo 6 serie preferite. Rimuovine una dal profilo prima di aggiungerne un\'altra.', 'info')
-        return
-      }
-      await supabase.from('user_favorites').insert({
-        user_id: user.id, tmdb_id: show.tmdb_id, title: show.title, poster_path: show.poster_path, position: favorites.size
-      })
-      setFavorites(prev => new Set(prev).add(show.tmdb_id))
-    }
+    } catch (e) { toast.error(e.message) }
   }
 
-  const filtered = useMemo(() => {
-    return shows.filter(s => {
-      if (status !== 'all' && s.status !== status) return false
-      if (type !== 'all' && s.media_type !== type) return false
-      if (genre) {
-        const showGenres = s.genres ? JSON.parse(s.genres) : []
-        if (!showGenres.includes(genre)) return false
-      }
-      return true
-    })
-  }, [shows, status, type, genre])
+  const filtered = useMemo(() => shows.filter(s => {
+    if (status !== 'tutto' && s.status !== status) return false
+    if (type !== 'tutti' && s.show_type !== type) return false
+    if (genre) { try { if (!(JSON.parse(s.genres || '[]')).includes(genre)) return false } catch { return false } }
+    return true
+  }), [shows, status, type, genre])
 
-  if (loading) return <Spinner label="Caricamento libreria..." />
+  if (loading) return <Loader />
 
   return (
-    <div className="page">
-      <div className="eyebrow">MyTrackList</div>
-      <h1 style={{ fontSize: 30, marginBottom: 16 }}>Libreria</h1>
+    <div className="page page-pad-top">
+      <h1 className="section-title" style={{ fontSize: 30 }}>Libreria</h1>
 
       <div className="chip-row" style={{ marginBottom: 10 }}>
-        <button className={`chip ${status === 'all' ? 'active' : ''}`} onClick={() => setStatus('all')}>Tutto</button>
-        {STATUSES.map(s => (
-          <button key={s.value} className={`chip ${status === s.value ? 'active' : ''}`} onClick={() => setStatus(s.value)}>
-            {s.label}
-          </button>
+        {STATUS_TABS.map(t => (
+          <button key={t.key} className={'chip' + (status === t.key ? ' on' : '')} onClick={() => setStatus(t.key)}>{t.label}</button>
         ))}
       </div>
-
       <div className="chip-row" style={{ marginBottom: 10 }}>
-        <button className={`chip ${type === 'all' ? 'active' : ''}`} onClick={() => setType('all')}>Tutti</button>
-        {MEDIA_TYPES.map(t => (
-          <button key={t.value} className={`chip ${type === t.value ? 'active' : ''}`} onClick={() => setType(t.value)}>
-            {t.label}
-          </button>
+        <button className={'chip' + (type === 'tutti' ? ' on' : '')} onClick={() => setType('tutti')}>Tutti</button>
+        {SHOW_TYPES.map(t => (
+          <button key={t.key} className={'chip' + (type === t.key ? ' on' : '')} onClick={() => setType(t.key)}>{t.label}</button>
         ))}
       </div>
-
-      <div className="chip-row" style={{ marginBottom: 20 }}>
+      <div className="chip-row" style={{ marginBottom: 14 }}>
         {GENRES.map(g => (
-          <button key={g} className={`chip ${genre === g ? 'active' : ''}`} onClick={() => setGenre(genre === g ? null : g)}>
-            {g}
-          </button>
+          <button key={g} className={'chip' + (genre === g ? ' on' : '')} onClick={() => setGenre(genre === g ? null : g)}>{g}</button>
         ))}
       </div>
 
       {filtered.length === 0 ? (
-        <div className="empty-state">
-          <h3>Nessuna serie trovata</h3>
-          <p>Prova a cambiare i filtri, oppure aggiungi nuove serie dalla ricerca.</p>
-        </div>
+        <Empty title="Vuoto qui">{shows.length === 0 ? 'Aggiungi la tua prima serie dalla ricerca, o importa da TVTime.' : 'Nessuna serie con questi filtri.'}</Empty>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          {filtered.map(show => (
-            <ShowCard
-              key={show.id}
-              show={show}
-              watchedEpisodes={episodeCounts[show.tmdb_id] || 0}
-              isFavorite={favorites.has(show.tmdb_id)}
-              onToggleFavorite={toggleFavorite}
-            />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {filtered.map(s => (
+            <LibraryCard key={s.tmdb_id} show={s} watched={counts[s.tmdb_id] || 0} total={s.total_episodes || 0}
+              isFav={favIds.has(s.tmdb_id)} onToggleFav={toggleFav} />
           ))}
         </div>
       )}

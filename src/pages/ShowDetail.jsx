@@ -1,447 +1,368 @@
-import { useEffect, useState, useCallback } from 'react'
-import { useParams } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { useEffect, useState, useMemo } from 'react'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
+import { getShow, backdropUrl, posterUrl, profileUrl, avgRuntime, runtimeRange, yearOf, genreNames } from '../lib/tmdb'
+import { imdbShowRating } from '../lib/omdb'
+import { malByTitle } from '../lib/jikan'
 import {
-  getShowDetails, getSeasonDetails, posterUrl, backdropUrl, profileUrl, formatRuntime, STATUSES
-} from '../lib/tmdb'
-import Spinner from '../components/Spinner'
+  getUserShow, upsertShow, deleteShow, getWatchedEpisodes, getEpisodeDetails, getSeasonTracking,
+  markEpisode, unmarkEpisode, upsertSeasonTracking, listFavorites, addFavorite, removeFavorite,
+} from '../lib/db'
+import { Loader } from '../components/ui'
+import RatingBadges from '../components/RatingBadges'
 import ShowSheet from '../components/ShowSheet'
 import EpisodeSheet from '../components/EpisodeSheet'
-import EpisodeRow from '../components/EpisodeRow'
+import SeasonAccordion from '../components/SeasonAccordion'
+import ConfirmInline from '../components/ConfirmInline'
 
-const STATUS_LABEL = Object.fromEntries(STATUSES.map(s => [s.value, s.label]))
+const key = (s, e) => `${s}:${e}`
+const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
+
+function guessType(show) {
+  const isAnim = (show.genres || []).some(g => g.id === 16)
+  if (!isAnim) return 'serie'
+  return show.original_language === 'ja' ? 'anime' : 'cartone'
+}
 
 export default function ShowDetail() {
   const { tmdbId } = useParams()
+  const id = Number(tmdbId)
   const { user } = useAuth()
-  const { showToast } = useToast()
-  const showId = parseInt(tmdbId, 10)
+  const toast = useToast()
+  const nav = useNavigate()
 
-  const [tmdbShow, setTmdbShow] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [show, setShow] = useState(null)
   const [userShow, setUserShow] = useState(null)
   const [watchedSet, setWatchedSet] = useState(new Set())
-  const [detailsMap, setDetailsMap] = useState({})
-  const [seasonTracking, setSeasonTracking] = useState({})
-  const [isFavorite, setIsFavorite] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [showSheetOpen, setShowSheetOpen] = useState(false)
-  const [expandedSeason, setExpandedSeason] = useState(null)
-  const [seasonEpisodes, setSeasonEpisodes] = useState({})
-  const [loadingSeason, setLoadingSeason] = useState(null)
-  const [activeEpisode, setActiveEpisode] = useState(null)
+  const [detailsMap, setDetailsMap] = useState(new Map())
+  const [trackMap, setTrackMap] = useState(new Map())
+  const [isFav, setIsFav] = useState(false)
+  const [favCount, setFavCount] = useState(0)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const details = await getShowDetails(showId)
-      setTmdbShow(details)
+  const [showSheet, setShowSheet] = useState(false)
+  const [savingShow, setSavingShow] = useState(false)
+  const [epTarget, setEpTarget] = useState(null) // { season, episode }
 
-      if (user) {
-        const [{ data: us }, { data: eps }, { data: eds }, { data: st }, { data: fav }] = await Promise.all([
-          supabase.from('user_shows').select('*').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle(),
-          supabase.from('user_episodes').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-          supabase.from('episode_details').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-          supabase.from('season_tracking').select('*').eq('user_id', user.id).eq('tmdb_show_id', showId),
-          supabase.from('user_favorites').select('id').eq('user_id', user.id).eq('tmdb_id', showId).maybeSingle()
-        ])
-        setUserShow(us || null)
-        setWatchedSet(new Set((eps || []).map(e => `${e.season_number}-${e.episode_number}`)))
-        const dMap = {}
-        ;(eds || []).forEach(d => { dMap[`${d.season_number}-${d.episode_number}`] = d })
-        setDetailsMap(dMap)
-        const sMap = {}
-        ;(st || []).forEach(s => { sMap[s.season_number] = s })
-        setSeasonTracking(sMap)
-        setIsFavorite(!!fav)
-      }
-    } catch (err) {
-      console.error('Errore caricamento serie:', err)
-      showToast(err?.message ? `Errore nel caricamento: ${err.message}` : 'Errore nel caricamento della serie.', 'error')
-    } finally {
-      setLoading(false)
-    }
-  }, [showId, user])
+  const imdbId = show?.external_ids?.imdb_id || null
 
-  useEffect(() => { load() }, [load])
+  const castNorm = useMemo(() => {
+    const cast = show?.aggregate_credits?.cast || []
+    return cast.slice(0, 40).map(c => ({
+      character: c.roles?.[0]?.character || c.character || '',
+      actor: c.name, profile_path: c.profile_path,
+    }))
+  }, [show])
 
-  async function toggleFavorite() {
-    if (!user || !tmdbShow) return
-    try {
-      if (isFavorite) {
-        const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', showId)
-        if (error) throw error
-        setIsFavorite(false)
-      } else {
-        const { count } = await supabase.from('user_favorites').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
-        if ((count || 0) >= 6) {
-          showToast('Puoi avere al massimo 6 serie preferite.', 'info')
-          return
-        }
-        const { error } = await supabase.from('user_favorites').insert({
-          user_id: user.id, tmdb_id: showId, title: tmdbShow.name, poster_path: tmdbShow.poster_path, position: count || 0
-        })
-        if (error) throw error
-        setIsFavorite(true)
-      }
-    } catch (err) {
-      console.error('Errore preferiti:', err)
-      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nell\'aggiornamento dei preferiti.', 'error')
-    }
+  const reloadUserData = async () => {
+    const [us, eps, dets, tracks, favs] = await Promise.all([
+      getUserShow(user.id, id), getWatchedEpisodes(user.id, id), getEpisodeDetails(user.id, id),
+      getSeasonTracking(user.id, id), listFavorites(user.id),
+    ])
+    setUserShow(us)
+    setWatchedSet(new Set(eps.map(e => key(e.season_number, e.episode_number))))
+    setDetailsMap(new Map(dets.map(d => [key(d.season_number, d.episode_number), d])))
+    setTrackMap(new Map(tracks.map(t => [t.season_number, t])))
+    setFavCount(favs.length)
+    setIsFav(favs.some(f => f.tmdb_id === id))
   }
 
-  async function toggleSeason(seasonNumber) {
-    if (expandedSeason === seasonNumber) {
-      setExpandedSeason(null)
-      return
-    }
-    setExpandedSeason(seasonNumber)
-    if (!seasonEpisodes[seasonNumber]) {
-      setLoadingSeason(seasonNumber)
+  useEffect(() => {
+    let on = true
+    ;(async () => {
+      setLoading(true)
       try {
-        const data = await getSeasonDetails(showId, seasonNumber)
-        setSeasonEpisodes(prev => ({ ...prev, [seasonNumber]: data.episodes || [] }))
-      } catch (err) {
-        console.error('Errore caricamento stagione:', err)
-        showToast('Errore nel caricamento degli episodi di questa stagione.', 'error')
-      } finally {
-        setLoadingSeason(null)
-      }
+        const s = await getShow(id)
+        if (!on) return
+        setShow(s)
+        await reloadUserData()
+      } catch (e) { toast.error(e.message) }
+      if (on) setLoading(false)
+    })()
+    return () => { on = false }
+  }, [id])
+
+  const baseRow = () => ({
+    user_id: user.id, tmdb_id: id,
+    title: show.name, original_title: show.original_name,
+    poster_path: show.poster_path, backdrop_path: show.backdrop_path,
+    first_air_year: yearOf(show), total_episodes: show.number_of_episodes,
+    episode_runtime: avgRuntime(show), genres: JSON.stringify(genreNames(show)),
+  })
+
+  // Aggiunge la serie in libreria (con voti esterni al primo add)
+  const ensureShow = async (extra = {}) => {
+    if (userShow) return userShow
+    const type = guessType(show)
+    const row = { ...baseRow(), status: 'da_vedere', show_type: type, ...extra }
+    const saved = await upsertShow(row)
+    setUserShow(saved)
+    // voti esterni best-effort
+    imdbShowRating(imdbId).then(r => { if (r != null) upsertShow({ user_id: user.id, tmdb_id: id, imdb_rating: r }).then(() => setUserShow(p => ({ ...p, imdb_rating: r }))) })
+    if (type === 'anime') {
+      malByTitle(show.name, show.original_name).then(m => {
+        if (m) upsertShow({ user_id: user.id, tmdb_id: id, mal_id: m.mal_id, mal_rating: m.score }).then(() => setUserShow(p => ({ ...p, mal_id: m.mal_id, mal_rating: m.score })))
+      })
     }
+    return saved
   }
 
-  async function toggleEpisodeWatched(seasonNumber, episode) {
-    if (!user) return
-    const key = `${seasonNumber}-${episode.episode_number}`
-    const isWatched = watchedSet.has(key)
+  const onAddClick = async () => {
+    try { await ensureShow(); toast.success('Aggiunta in libreria.') }
+    catch (e) { toast.error(e.message) }
+  }
 
+  const onSaveShow = async (patch) => {
+    setSavingShow(true)
     try {
-      if (isWatched) {
-        const { error } = await supabase.from('user_episodes').delete()
-          .eq('user_id', user.id).eq('tmdb_show_id', showId)
-          .eq('season_number', seasonNumber).eq('episode_number', episode.episode_number)
-        if (error) throw error
-        setWatchedSet(prev => { const s = new Set(prev); s.delete(key); return s })
-      } else {
-        const { error } = await supabase.from('user_episodes').upsert({
-          user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-          episode_number: episode.episode_number, watched_at: new Date().toISOString()
-        }, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-        if (error) throw error
-        setWatchedSet(prev => new Set(prev).add(key))
-
-        // Auto-status: se la serie era "da vedere", passa a "in corso"
-        if (userShow && userShow.status === 'planned') {
-          const { data } = await supabase.from('user_shows').update({ status: 'watching', updated_at: new Date().toISOString() })
-            .eq('id', userShow.id).select().single()
-          setUserShow(data)
-        } else if (!userShow) {
-          // La serie non è ancora in libreria: aggiungila automaticamente come "in corso"
-          const { data } = await supabase.from('user_shows').upsert({
-            user_id: user.id, tmdb_id: showId, media_type: 'tv', status: 'watching',
-            title: tmdbShow.name, original_title: tmdbShow.original_name,
-            poster_path: tmdbShow.poster_path, backdrop_path: tmdbShow.backdrop_path,
-            first_air_year: tmdbShow.first_air_date ? parseInt(tmdbShow.first_air_date.slice(0, 4)) : null,
-            total_episodes: tmdbShow.number_of_episodes || null,
-            episode_runtime: tmdbShow.episode_run_time?.[0] || null,
-            genres: JSON.stringify((tmdbShow.genres || []).map(g => g.name)),
-            watch_count: 1, updated_at: new Date().toISOString()
-          }, { onConflict: 'user_id,tmdb_id' }).select().single()
-          setUserShow(data)
-        }
-
-        // Season tracking: imposta data inizio se prima visione della stagione
-        const existing = seasonTracking[seasonNumber]
-        if (!existing) {
-          const { data } = await supabase.from('season_tracking').upsert({
-            user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-            start_date: new Date().toISOString().slice(0, 10), watch_count: 0
-          }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-          setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
-        }
-      }
-    } catch (err) {
-      console.error('Errore aggiornamento episodio:', err)
-      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio dell\'episodio.', 'error')
-    }
-  }
-
-  function openEpisodeSheet(seasonNumber, episode) {
-    setActiveEpisode({ seasonNumber, episode })
-  }
-
-  function onEpisodeSaved({ watched, details }) {
-    const key = `${activeEpisode.seasonNumber}-${activeEpisode.episode.episode_number}`
-    setWatchedSet(prev => { const s = new Set(prev); watched ? s.add(key) : s.delete(key); return s })
-    setDetailsMap(prev => ({ ...prev, [key]: details }))
-  }
-
-  async function markAllSeason(seasonNumber, mark) {
-    if (!user) return
-    const episodes = seasonEpisodes[seasonNumber] || []
-    try {
-      if (mark) {
-        const rows = episodes.map(ep => ({
-          user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-          episode_number: ep.episode_number, watched_at: new Date().toISOString()
-        }))
-        const { error } = await supabase.from('user_episodes').upsert(rows, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-        if (error) throw error
-        setWatchedSet(prev => {
-          const s = new Set(prev)
-          episodes.forEach(ep => s.add(`${seasonNumber}-${ep.episode_number}`))
-          return s
-        })
-        if (userShow && userShow.status === 'planned') {
-          const { data } = await supabase.from('user_shows').update({ status: 'watching' }).eq('id', userShow.id).select().single()
-          setUserShow(data)
-        }
-      } else {
-        const { error } = await supabase.from('user_episodes').delete()
-          .eq('user_id', user.id).eq('tmdb_show_id', showId).eq('season_number', seasonNumber)
-        if (error) throw error
-        setWatchedSet(prev => {
-          const s = new Set(prev)
-          episodes.forEach(ep => s.delete(`${seasonNumber}-${ep.episode_number}`))
-          return s
+      const saved = await upsertShow({ ...baseRow(), ...(userShow || {}), ...patch, user_id: user.id, tmdb_id: id })
+      setUserShow(saved)
+      // se diventa anime e non ho ancora il voto MAL, provo a prenderlo
+      if (patch.show_type === 'anime' && !saved.mal_rating) {
+        malByTitle(show.name, show.original_name).then(m => {
+          if (m) upsertShow({ user_id: user.id, tmdb_id: id, mal_id: m.mal_id, mal_rating: m.score }).then(() => setUserShow(p => ({ ...p, mal_id: m.mal_id, mal_rating: m.score })))
         })
       }
-    } catch (err) {
-      console.error('Errore aggiornamento stagione:', err)
-      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio della stagione.', 'error')
+      toast.success('Serie aggiornata.')
+      setShowSheet(false)
+    } catch (e) { toast.error(e.message) }
+    setSavingShow(false)
+  }
+
+  const onDelete = async () => {
+    try { await deleteShow(user.id, id); toast.success('Rimossa dalla libreria.'); nav('/libreria') }
+    catch (e) { toast.error(e.message) }
+  }
+
+  // --- episodi ---
+  const setStatusIfNeeded = async () => {
+    const cur = userShow?.status
+    if (!cur || cur === 'da_vedere') {
+      const saved = await upsertShow({ user_id: user.id, tmdb_id: id, ...baseRow(), ...(userShow || {}), status: 'in_corso' })
+      setUserShow(saved)
     }
   }
 
-  async function bumpSeasonRewatch(seasonNumber) {
-    if (!user) return
+  const toggleEpisode = async (s, e, makeWatched) => {
     try {
-      const existing = seasonTracking[seasonNumber]
-      const newCount = (existing?.watch_count || 0) + 1
-      const { data, error } = await supabase.from('season_tracking').upsert({
-        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-        start_date: existing?.start_date || null, end_date: existing?.end_date || null, watch_count: newCount
-      }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-      if (error) throw error
-      setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
-    } catch (err) {
-      console.error('Errore rewatch stagione:', err)
-      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio del rewatch.', 'error')
-    }
+      await ensureShow()
+      if (makeWatched) { await markEpisode(user.id, id, s, e); await setStatusIfNeeded() }
+      else await unmarkEpisode(user.id, id, s, e)
+      setWatchedSet(prev => { const n = new Set(prev); const k = key(s, e); makeWatched ? n.add(k) : n.delete(k); return n })
+    } catch (err) { toast.error(err.message) }
   }
 
-  async function updateSeasonDate(seasonNumber, field, value) {
-    if (!user) return
+  const onMarkAll = async (s, epNums) => {
     try {
-      const existing = seasonTracking[seasonNumber]
-      const { data, error } = await supabase.from('season_tracking').upsert({
-        user_id: user.id, tmdb_show_id: showId, season_number: seasonNumber,
-        start_date: field === 'start_date' ? value : (existing?.start_date || null),
-        end_date: field === 'end_date' ? value : (existing?.end_date || null),
-        watch_count: existing?.watch_count || 0
-      }, { onConflict: 'user_id,tmdb_show_id,season_number' }).select().single()
-      if (error) throw error
-      setSeasonTracking(prev => ({ ...prev, [seasonNumber]: data }))
-    } catch (err) {
-      console.error('Errore data stagione:', err)
-      showToast(err?.message ? `Errore: ${err.message}` : 'Errore nel salvataggio della data.', 'error')
-    }
+      await ensureShow()
+      for (const e of epNums) await markEpisode(user.id, id, s, e)
+      await setStatusIfNeeded()
+      setWatchedSet(prev => { const n = new Set(prev); epNums.forEach(e => n.add(key(s, e))); return n })
+      toast.success(`Stagione ${s} segnata.`)
+    } catch (err) { toast.error(err.message) }
+  }
+  const onUnmarkAll = async (s, epNums) => {
+    try {
+      for (const e of epNums) await unmarkEpisode(user.id, id, s, e)
+      setWatchedSet(prev => { const n = new Set(prev); epNums.forEach(e => n.delete(key(s, e))); return n })
+    } catch (err) { toast.error(err.message) }
   }
 
-  if (loading || !tmdbShow) return <Spinner label="Caricamento serie..." />
+  const onRewatch = async (s, count) => {
+    try {
+      const saved = await upsertSeasonTracking({ user_id: user.id, tmdb_show_id: id, season_number: s, watch_count: count })
+      setTrackMap(prev => new Map(prev).set(s, saved))
+    } catch (err) { toast.error(err.message) }
+  }
+  const onDates = async (s, patch) => {
+    try {
+      const existing = trackMap.get(s) || {}
+      const saved = await upsertSeasonTracking({ user_id: user.id, tmdb_show_id: id, season_number: s, watch_count: existing.watch_count || 0, ...('start_date' in patch ? {} : { start_date: existing.start_date || null }), ...('end_date' in patch ? {} : { end_date: existing.end_date || null }), ...patch })
+      setTrackMap(prev => new Map(prev).set(s, saved))
+    } catch (err) { toast.error(err.message) }
+  }
 
-  const seasons = (tmdbShow.seasons || []).filter(s => s.season_number > 0)
-  const totalEpisodesWatched = watchedSet.size
-  const totalEpisodes = tmdbShow.number_of_episodes || 0
-  const progress = totalEpisodes > 0 ? Math.min(100, Math.round((totalEpisodesWatched / totalEpisodes) * 100)) : 0
+  const toggleFav = async () => {
+    try {
+      if (isFav) { await removeFavorite(user.id, id); setIsFav(false); setFavCount(c => c - 1) }
+      else {
+        if (favCount >= 6) return toast.error('Massimo 6 preferite. Rimuovine una dal profilo.')
+        await ensureShow()
+        await addFavorite(user.id, { tmdb_id: id, title: show.name, poster_path: show.poster_path }, favCount)
+        setIsFav(true); setFavCount(c => c + 1)
+      }
+    } catch (e) { toast.error(e.message) }
+  }
 
-  const episodeRatings = Object.values(detailsMap).map(d => d.rating).filter(r => r > 0)
-  const avgEpisodeRating = episodeRatings.length > 0
-    ? (episodeRatings.reduce((a, b) => a + b, 0) / episodeRatings.length) * 2
-    : null
+  if (loading || !show) return <div className="app-shell"><Loader /></div>
 
-  const cast = (tmdbShow.aggregate_credits?.cast || []).slice(0, 15)
+  const seasons = (show.seasons || []).filter(s => s.season_number >= 1 && s.episode_count > 0)
+  const epDetailsForShow = [...detailsMap.values()]
+  const rated = epDetailsForShow.filter(d => d.rating != null)
+  const mediaEp = rated.length ? Math.round((rated.reduce((a, d) => a + d.rating, 0) / rated.length) * 10) / 10 : null
+  const totalEpisodes = show.number_of_episodes || 0
+  const watchedCount = watchedSet.size
+  const pct = totalEpisodes ? Math.min(100, Math.round((watchedCount / totalEpisodes) * 100)) : 0
+
+  const epTargetDetail = epTarget ? detailsMap.get(key(epTarget.season, epTarget.episode.episode_number)) : null
+  const epTargetWatched = epTarget ? watchedSet.has(key(epTarget.season, epTarget.episode.episode_number)) : false
 
   return (
-    <div className="page" style={{ padding: 0 }}>
-      <div style={{ position: 'relative', height: 180, overflow: 'hidden' }}>
-        {tmdbShow.backdrop_path ? (
-          <img src={backdropUrl(tmdbShow.backdrop_path)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-        ) : (
-          <div style={{ width: '100%', height: '100%', background: 'var(--surface)' }} />
-        )}
-        <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(30,30,46,0.15) 0%, rgba(30,30,46,0.85) 75%, var(--bg) 100%)' }} />
+    <div className="show-detail">
+      {/* Backdrop */}
+      <div className="sd-backdrop">
+        {backdropUrl(show.backdrop_path)
+          ? <img src={backdropUrl(show.backdrop_path)} alt="" />
+          : <div style={{ width: '100%', height: '100%', background: 'var(--surface0)' }} />}
+        <div className="sd-backdrop-grad" />
+        <button className="sd-back" onClick={() => nav(-1)} aria-label="Indietro">‹</button>
+        <button className={'sd-fav' + (isFav ? ' on' : '')} onClick={toggleFav} aria-label="Preferito">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill={isFav ? 'var(--gold)' : 'none'} stroke={isFav ? 'var(--gold)' : '#fff'} strokeWidth="2">
+            <path d="M12 3l2.9 6.26 6.1.53-4.6 4.02 1.38 6.16L12 15.9 6.22 20l1.38-6.16-4.6-4.02 6.1-.53z" />
+          </svg>
+        </button>
       </div>
 
-      <div style={{ padding: '0 16px', marginTop: -64, position: 'relative' }}>
-        <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', marginBottom: 12 }}>
-          <div className="gold-border" style={{ width: 96, minWidth: 96, aspectRatio: '2/3', overflow: 'hidden', background: 'var(--surface)' }}>
-            {tmdbShow.poster_path && (
-              <img src={posterUrl(tmdbShow.poster_path)} alt={tmdbShow.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            )}
+      {/* Header con poster */}
+      <div className="sd-header">
+        <div className="sd-poster">
+          {posterUrl(show.poster_path)
+            ? <img src={posterUrl(show.poster_path)} alt={show.name} />
+            : <div className="sd-poster-ph">▦</div>}
+        </div>
+        <div className="sd-head-meta">
+          <h1 className="sd-title">{show.name}</h1>
+          <div className="muted" style={{ fontSize: 13 }}>
+            {yearOf(show) || '—'} · {seasons.length} stag. · {totalEpisodes} ep. {runtimeRange(show) ? '· ' + runtimeRange(show) : ''}
           </div>
-          <div style={{ flex: 1, minWidth: 0, paddingBottom: 4 }}>
-            <h1 style={{ fontSize: 26, lineHeight: 1.1 }}>{tmdbShow.name}</h1>
-            <div style={{ fontSize: 12, color: 'var(--subtext)', marginTop: 4 }}>
-              {tmdbShow.first_air_date?.slice(0, 4) || '—'} · {tmdbShow.number_of_seasons} stagioni · {tmdbShow.number_of_episodes} episodi
-              {tmdbShow.episode_run_time?.length > 0 && <> · {formatRuntime(tmdbShow.episode_run_time)}</>}
-            </div>
+          <div style={{ marginTop: 8 }}>
+            <RatingBadges tmdb={show.vote_average} imdb={userShow?.imdb_rating} mal={userShow?.mal_rating} />
+          </div>
+        </div>
+      </div>
+
+      <div className="page" style={{ paddingTop: 6 }}>
+        {/* I tuoi voti */}
+        <div className="sd-yourratings">
+          <div className="yr">
+            <div className="yr-label">Il tuo voto</div>
+            <div className={'yr-val' + (userShow?.rating ? ' has' : '')}>{userShow?.rating ? `${userShow.rating}/10` : '—'}</div>
+          </div>
+          <div className="yr-div" />
+          <div className="yr">
+            <div className="yr-label">Media episodi</div>
+            <div className={'yr-val' + (mediaEp ? ' has' : '')}>{mediaEp ? `${mediaEp}/10` : '—'}</div>
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
-          {tmdbShow.vote_average > 0 && (
-            <span className="badge">TMDB {tmdbShow.vote_average.toFixed(1)} ({tmdbShow.vote_count})</span>
+        {/* Generi */}
+        {genreNames(show).length > 0 && (
+          <div className="chip-row" style={{ marginBottom: 14, flexWrap: 'wrap' }}>
+            {genreNames(show).map(g => <span key={g} className="chip" style={{ pointerEvents: 'none' }}>{g}</span>)}
+          </div>
+        )}
+
+        {/* Azioni */}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 8 }}>
+          {userShow ? (
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => setShowSheet(true)}>✎ Modifica</button>
+          ) : (
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={onAddClick}>+ Aggiungi</button>
           )}
-          {avgEpisodeRating && <span className="badge gold">Media episodi {avgEpisodeRating.toFixed(1)}/10</span>}
-          {userShow && <span className={`badge status-${userShow.status}`}>{STATUS_LABEL[userShow.status]}</span>}
         </div>
-
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 16 }}>
-          {(tmdbShow.genres || []).map(g => <span key={g.id} className="badge">{g.name}</span>)}
-        </div>
-
-        <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
-          <button className="btn" onClick={() => setShowSheetOpen(true)}>
-            {userShow ? '✎ Modifica' : '+ Aggiungi'}
-          </button>
-          <button
-            className="btn secondary"
-            onClick={toggleFavorite}
-            style={{ color: isFavorite ? 'var(--gold)' : 'var(--text)' }}
-          >
-            {isFavorite ? '★ Preferita' : '☆ Preferisci'}
-          </button>
-        </div>
-
-        {tmdbShow.overview && (
-          <p style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--subtext)', marginBottom: 20 }}>{tmdbShow.overview}</p>
-        )}
-
-        {totalEpisodes > 0 && (
-          <div style={{ marginBottom: 24 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--subtext)', marginBottom: 6 }}>
-              <span>Progresso episodi</span>
-              <span>{totalEpisodesWatched}/{totalEpisodes}</span>
-            </div>
-            <div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }} /></div>
+        {userShow && (
+          <div style={{ marginBottom: 14 }}>
+            <ConfirmInline label="Rimuovi dalla libreria" confirmLabel="Tocca ancora per rimuovere" onConfirm={onDelete} className="btn btn-danger btn-block" />
           </div>
         )}
 
-        <h2 className="section-title">Stagioni</h2>
-        <div style={{ marginBottom: 28 }}>
-          {seasons.map(season => {
-            const isOpen = expandedSeason === season.season_number
-            const episodes = seasonEpisodes[season.season_number]
-            const watchedInSeason = (episodes || []).filter(ep => watchedSet.has(`${season.season_number}-${ep.episode_number}`)).length
-            const tracking = seasonTracking[season.season_number]
+        {/* Progresso */}
+        {totalEpisodes > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+              <span className="subtext" style={{ fontSize: 12, letterSpacing: '.1em', textTransform: 'uppercase' }}>Progresso</span>
+              <span className="muted tabular" style={{ fontSize: 12 }}>{watchedCount}/{totalEpisodes} · {pct}%</span>
+            </div>
+            <div className="prog" style={{ height: 8 }}><i style={{ width: pct + '%' }} /></div>
+          </div>
+        )}
 
-            return (
-              <div key={season.id} className="card" style={{ marginBottom: 8 }}>
-                <button
-                  onClick={() => toggleSeason(season.season_number)}
-                  style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 14, textAlign: 'left' }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{season.name}</div>
-                    <div style={{ fontSize: 12, color: 'var(--subtext)', marginTop: 2 }}>
-                      {episodes ? `${watchedInSeason}/${episodes.length} episodi` : `${season.episode_count} episodi`}
-                      {tracking?.watch_count > 0 && <span style={{ color: 'var(--mauve)' }}> · ×{tracking.watch_count}</span>}
-                    </div>
+        {/* Sinossi */}
+        {show.overview && <p className="sd-overview">{show.overview}</p>}
+
+        {/* Stagioni */}
+        <h2 className="section-title" style={{ marginTop: 18 }}>Stagioni</h2>
+        {seasons.map(s => (
+          <SeasonAccordion key={s.season_number} show={show} season={s}
+            watchedSet={watchedSet} detailsMap={detailsMap} track={trackMap.get(s.season_number)}
+            onToggleEpisode={toggleEpisode} onMarkAll={onMarkAll} onUnmarkAll={onUnmarkAll}
+            onRewatch={onRewatch} onDates={onDates}
+            onOpenEpisode={(season, episode) => setEpTarget({ season, episode })} />
+        ))}
+
+        {/* Cast */}
+        {castNorm.length > 0 && (
+          <>
+            <h2 className="section-title" style={{ marginTop: 18 }}>Cast</h2>
+            <div className="cast-strip">
+              {castNorm.slice(0, 20).map((c, i) => (
+                <div key={i} className="cast-cell">
+                  <div className="cast-photo">
+                    {c.profile_path ? <img src={profileUrl(c.profile_path)} alt="" loading="lazy" /> : <div className="cast-ph">{(c.character[0] || '?')}</div>}
                   </div>
-                  <span style={{ color: 'var(--subtext)', fontSize: 18 }}>{isOpen ? '−' : '+'}</span>
-                </button>
-
-                {isOpen && (
-                  <div style={{ padding: '0 14px 14px' }}>
-                    <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                      <div className="field" style={{ marginBottom: 0 }}>
-                        <label>Inizio</label>
-                        <input type="date" value={tracking?.start_date || ''} onChange={(e) => updateSeasonDate(season.season_number, 'start_date', e.target.value)} />
-                      </div>
-                      <div className="field" style={{ marginBottom: 0 }}>
-                        <label>Fine</label>
-                        <input type="date" value={tracking?.end_date || ''} onChange={(e) => updateSeasonDate(season.season_number, 'end_date', e.target.value)} />
-                      </div>
-                      <button className="btn ghost" onClick={() => bumpSeasonRewatch(season.season_number)} style={{ marginTop: 18 }}>
-                        ↻ Rewatch (×{tracking?.watch_count || 0})
-                      </button>
-                    </div>
-                    {tracking?.watch_count > 0 && (
-                      <p style={{ fontSize: 11, color: 'var(--subtext)', marginBottom: 10 }}>
-                        Questa stagione viene conteggiata ×{(tracking.watch_count || 0) + 1} nelle ore ed episodi totali nelle statistiche.
-                      </p>
-                    )}
-
-                    {loadingSeason === season.season_number ? (
-                      <Spinner label="Caricamento episodi..." />
-                    ) : (
-                      <>
-                        <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-                          <button className="btn secondary" onClick={() => markAllSeason(season.season_number, true)}>Segna tutti</button>
-                          <button className="btn secondary" onClick={() => markAllSeason(season.season_number, false)}>Deseleziona</button>
-                        </div>
-                        {(episodes || []).map(ep => (
-                          <EpisodeRow
-                            key={ep.id}
-                            episode={ep}
-                            watched={watchedSet.has(`${season.season_number}-${ep.episode_number}`)}
-                            details={detailsMap[`${season.season_number}-${ep.episode_number}`]}
-                            onToggleWatched={() => toggleEpisodeWatched(season.season_number, ep)}
-                            onOpen={() => openEpisodeSheet(season.season_number, ep)}
-                          />
-                        ))}
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </div>
-
-        {cast.length > 0 && (
-          <div style={{ marginBottom: 24 }}>
-            <h2 className="section-title">Cast</h2>
-            <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8 }}>
-              {cast.map(c => (
-                <div key={c.id} style={{ flexShrink: 0, width: 76, textAlign: 'center' }}>
-                  <div style={{ width: 76, height: 76, overflow: 'hidden', background: 'var(--surface-hover)', marginBottom: 6 }}>
-                    {c.profile_path ? (
-                      <img src={profileUrl(c.profile_path)} alt={c.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
-                    ) : (
-                      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--subtext)' }}>?</div>
-                    )}
-                  </div>
-                  <div style={{ fontSize: 11, fontWeight: 600, lineHeight: 1.2 }}>{c.name}</div>
-                  <div style={{ fontSize: 10, color: 'var(--subtext)', lineHeight: 1.2 }}>{c.roles?.[0]?.character}</div>
+                  <div className="cast-char">{c.character}</div>
+                  <div className="cast-actor muted">{c.actor}</div>
                 </div>
               ))}
             </div>
-          </div>
+          </>
         )}
       </div>
 
-      {showSheetOpen && (
-        <ShowSheet
-          tmdbShow={tmdbShow}
-          existing={userShow}
-          onClose={() => setShowSheetOpen(false)}
-          onSaved={(data) => setUserShow(data)}
-        />
-      )}
+      <ShowSheet open={showSheet} onClose={() => setShowSheet(false)} initial={userShow} cast={castNorm} onSave={onSaveShow} saving={savingShow} />
 
-      {activeEpisode && (
-        <EpisodeSheet
-          tmdbShowId={showId}
-          seasonNumber={activeEpisode.seasonNumber}
-          episode={activeEpisode.episode}
-          watched={watchedSet.has(`${activeEpisode.seasonNumber}-${activeEpisode.episode.episode_number}`)}
-          details={detailsMap[`${activeEpisode.seasonNumber}-${activeEpisode.episode.episode_number}`]}
-          onClose={() => setActiveEpisode(null)}
-          onSaved={onEpisodeSaved}
-        />
-      )}
+      <EpisodeSheet
+        open={!!epTarget} onClose={() => setEpTarget(null)}
+        show={show} imdbId={imdbId}
+        season={epTarget?.season} episode={epTarget?.episode}
+        watched={epTargetWatched} detail={epTargetDetail}
+        onSaved={reloadUserData}
+      />
+
+      <style>{`
+        .show-detail { padding-bottom: 20px; }
+        .sd-backdrop { position: relative; width: 100%; height: 220px; overflow: hidden; background: var(--surface0); }
+        .sd-backdrop img { width: 100%; height: 100%; object-fit: cover; }
+        .sd-backdrop-grad { position: absolute; inset: 0; background: linear-gradient(180deg, rgba(30,30,46,.35) 0%, rgba(30,30,46,.2) 40%, var(--bg) 100%); }
+        .sd-back, .sd-fav { position: absolute; top: 12px; width: 40px; height: 40px; display: grid; place-items: center;
+          background: rgba(17,17,27,.6); backdrop-filter: blur(6px); color: #fff; }
+        .sd-back { left: 12px; font-size: 30px; line-height: 1; padding-bottom: 4px; }
+        .sd-fav { right: 12px; }
+        .sd-header { display: flex; gap: 14px; padding: 0 14px; margin-top: -60px; position: relative; z-index: 2; align-items: flex-end; }
+        .sd-poster { width: 112px; flex: 0 0 112px; aspect-ratio: 2/3; border: 3px solid var(--gold); overflow: hidden; background: var(--surface1); box-shadow: 0 10px 30px -12px rgba(0,0,0,.8); }
+        .sd-poster img { width: 100%; height: 100%; object-fit: cover; }
+        .sd-poster-ph { width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); font-size: 30px; }
+        .sd-head-meta { flex: 1; min-width: 0; padding-bottom: 4px; }
+        .sd-title { font-size: 30px; line-height: .95; letter-spacing: .02em; margin-bottom: 4px; }
+        .sd-yourratings { display: flex; align-items: stretch; background: var(--surface0); border: 1px solid var(--surface1); margin-bottom: 14px; }
+        .yr { flex: 1; padding: 12px; text-align: center; }
+        .yr-div { width: 1px; background: var(--surface1); }
+        .yr-label { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--subtext); margin-bottom: 4px; }
+        .yr-val { font-family: var(--f-display); font-size: 28px; color: var(--muted); letter-spacing: .03em; }
+        .yr-val.has { color: var(--gold); }
+        .sd-overview { color: var(--subtext); font-size: 14px; line-height: 1.55; margin-bottom: 4px; }
+        .cast-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; }
+        .cast-strip::-webkit-scrollbar { display: none; }
+        .cast-cell { flex: 0 0 78px; text-align: center; }
+        .cast-photo { width: 78px; height: 78px; overflow: hidden; background: var(--surface1); }
+        .cast-photo img { width: 100%; height: 100%; object-fit: cover; }
+        .cast-ph { width: 100%; height: 100%; display: grid; place-items: center; font-family: var(--f-display); font-size: 26px; color: var(--muted); }
+        .cast-char { font-size: 11px; font-weight: 600; margin-top: 4px; line-height: 1.15; color: var(--text);
+          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .cast-actor { font-size: 10px; line-height: 1.1; margin-top: 2px;
+          display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+      `}</style>
     </div>
   )
 }

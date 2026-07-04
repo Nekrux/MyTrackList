@@ -1,12 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+const url = import.meta.env.VITE_SUPABASE_URL
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error(
-    'Variabili Supabase mancanti. Controlla che VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY siano impostate (file .env in locale, o variabili d\'ambiente su Cloudflare Pages).'
-  )
+if (!url || !key) {
+  // Messaggio esplicito: un errore vero costa meno di un debug alla cieca (lezione #2)
+  console.error('Config mancante: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY non impostate.')
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export const supabase = createClient(url || 'http://localhost', key || 'anon', {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+})

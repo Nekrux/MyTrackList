@@ -1,247 +1,194 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { posterUrl } from '../lib/tmdb'
-import { computeStats } from '../lib/stats'
-import StatsCharts from '../components/StatsCharts'
-import Spinner from '../components/Spinner'
+import { supabase } from '../lib/supabase'
+import { listShows, listFavorites, removeFavorite } from '../lib/db'
+import { Loader, Sheet, Poster } from '../components/ui'
+import StatsPanel from '../components/StatsPanel'
+import { SocialIcon } from '../components/SocialIcon'
 
 export default function Profile() {
-  const { user, profile, signOut, refreshProfile } = useAuth()
-  const { showToast } = useToast()
+  const { user, profile, refreshProfile, signOut } = useAuth()
+  const toast = useToast()
+  const nav = useNavigate()
   const [tab, setTab] = useState('profilo')
-  const [form, setForm] = useState(null)
+  const [favs, setFavs] = useState([])
+  const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [favorites, setFavorites] = useState([])
-  const [favSearch, setFavSearch] = useState('')
-  const [libraryShows, setLibraryShows] = useState([])
-  const [stats, setStats] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [copied, setCopied] = useState(false)
 
+  // dati statistiche
+  const [statsData, setStatsData] = useState(null)
+
+  // form
+  const [f, setF] = useState({})
+
+  useEffect(() => { listFavorites(user.id).then(setFavs).catch(() => {}) }, [user.id])
   useEffect(() => {
-    setForm(profile || {
-      username: '', display_name: '', bio: '', note: '', avatar_url: '', banner_url: '',
-      is_public: true, social_tvtime: '', social_mal: '', social_imdb: ''
+    setF({
+      display_name: profile.display_name || '', bio: profile.bio || '', note: profile.note || '',
+      avatar_url: profile.avatar_url || '', banner_url: profile.banner_url || '',
+      social_tvtime: profile.social_tvtime || '', social_mal: profile.social_mal || '', social_imdb: profile.social_imdb || '',
     })
   }, [profile])
 
-  useEffect(() => {
-    if (!user) return
-    let cancelled = false
-    async function load() {
-      setLoading(true)
-      try {
-        const [{ data: favs }, { data: shows }, { data: episodes }, { data: episodeDetails }, { data: seasonTracking }] = await Promise.all([
-          supabase.from('user_favorites').select('*').eq('user_id', user.id).order('position'),
-          supabase.from('user_shows').select('*').eq('user_id', user.id),
-          supabase.from('user_episodes').select('*').eq('user_id', user.id),
-          supabase.from('episode_details').select('*').eq('user_id', user.id),
-          supabase.from('season_tracking').select('*').eq('user_id', user.id)
-        ])
-        if (cancelled) return
-        setFavorites(favs || [])
-        setLibraryShows(shows || [])
-        setStats(computeStats({
-          shows: shows || [], episodes: episodes || [], episodeDetails: episodeDetails || [],
-          seasonTracking: seasonTracking || []
-        }))
-      } catch (err) {
-        console.error('Errore caricamento profilo:', err)
-        showToast('Errore nel caricamento dei dati del profilo.', 'error')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
-    }
-    load()
-    return () => { cancelled = true }
-  }, [user])
+  const loadStats = async () => {
+    if (statsData) return
+    try {
+      const [shows, eps, dets, seas] = await Promise.all([
+        listShows(user.id),
+        supabase.from('user_episodes').select('*').eq('user_id', user.id),
+        supabase.from('episode_details').select('*').eq('user_id', user.id),
+        supabase.from('season_tracking').select('*').eq('user_id', user.id),
+      ])
+      setStatsData({ shows, episodes: eps.data || [], details: dets.data || [], seasons: seas.data || [] })
+    } catch (e) { toast.error(e.message) }
+  }
+  useEffect(() => { if (tab === 'stats') loadStats() }, [tab])
 
-  async function handleSaveProfile(e) {
-    e.preventDefault()
-    if (!form.username.trim()) { showToast('Lo username è obbligatorio.', 'info'); return }
+  const save = async () => {
     setSaving(true)
-    const { error } = await supabase.from('user_profiles').upsert({
-      id: user.id,
-      username: form.username.trim(),
-      display_name: form.display_name || null,
-      bio: form.bio || null,
-      note: form.note || null,
-      avatar_url: form.avatar_url || null,
-      banner_url: form.banner_url || null,
-      is_public: form.is_public,
-      social_tvtime: form.social_tvtime || null,
-      social_mal: form.social_mal || null,
-      social_imdb: form.social_imdb || null,
-      updated_at: new Date().toISOString()
-    })
+    const { error } = await supabase.from('user_profiles')
+      .update({ ...f, updated_at: new Date().toISOString() }).eq('id', user.id)
     setSaving(false)
-    if (error) {
-      showToast(error.message.includes('duplicate') ? 'Questo username è già in uso.' : `Errore nel salvataggio: ${error.message}`, 'error')
-      return
-    }
-    showToast('Profilo salvato', 'success')
-    await refreshProfile()
+    if (error) return toast.error(error.message)
+    toast.success('Profilo aggiornato.')
+    setEditing(false); refreshProfile()
   }
 
-  async function removeFavorite(tmdbId) {
-    try {
-      const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('tmdb_id', tmdbId)
-      if (error) throw error
-      setFavorites(prev => prev.filter(f => f.tmdb_id !== tmdbId))
-    } catch (err) {
-      showToast('Errore nella rimozione del preferito.', 'error')
-    }
+  const togglePublic = async () => {
+    const { error } = await supabase.from('user_profiles').update({ is_public: !profile.is_public }).eq('id', user.id)
+    if (error) return toast.error(error.message)
+    toast.success(profile.is_public ? 'Profilo ora privato.' : 'Profilo ora pubblico.')
+    refreshProfile()
   }
 
-  async function addFavorite(show) {
-    if (favorites.length >= 6) { showToast('Massimo 6 serie preferite.', 'info'); return }
-    if (favorites.some(f => f.tmdb_id === show.tmdb_id)) return
-    try {
-      const { data, error } = await supabase.from('user_favorites').insert({
-        user_id: user.id, tmdb_id: show.tmdb_id, title: show.title, poster_path: show.poster_path, position: favorites.length
-      }).select().single()
-      if (error) throw error
-      setFavorites(prev => [...prev, data])
-      setFavSearch('')
-    } catch (err) {
-      showToast('Errore nell\'aggiunta ai preferiti.', 'error')
-    }
+  const publicUrl = `${window.location.origin}/u/${profile.username}`
+  const copyLink = async () => {
+    try { await navigator.clipboard.writeText(publicUrl); toast.success('Link copiato.') }
+    catch { toast.info(publicUrl) }
   }
 
-  function copyPublicLink() {
-    const url = `${window.location.origin}/u/${form.username}`
-    navigator.clipboard.writeText(url)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+  const dropFav = async (tmdbId) => {
+    try { await removeFavorite(user.id, tmdbId); setFavs(favs.filter(x => x.tmdb_id !== tmdbId)) }
+    catch (e) { toast.error(e.message) }
   }
 
-  if (!form || loading) return <Spinner label="Caricamento profilo..." />
-
-  const filteredLibrary = libraryShows.filter(s =>
-    favSearch.trim() && s.title.toLowerCase().includes(favSearch.toLowerCase()) && !favorites.some(f => f.tmdb_id === s.tmdb_id)
-  ).slice(0, 6)
+  if (!profile) return <Loader />
 
   return (
-    <div className="page">
-      <div className="eyebrow">MyTrackList</div>
-      <h1 style={{ fontSize: 30, marginBottom: 16 }}>Profilo</h1>
-
-      <div className="chip-row" style={{ marginBottom: 20 }}>
-        <button className={`chip ${tab === 'profilo' ? 'active' : ''}`} onClick={() => setTab('profilo')}>Profilo</button>
-        <button className={`chip ${tab === 'statistiche' ? 'active' : ''}`} onClick={() => setTab('statistiche')}>Statistiche</button>
+    <div>
+      {/* Banner */}
+      <div className="pf-banner" style={{ height: 160 }}>
+        {profile.banner_url ? <img src={profile.banner_url} alt="" /> : <div className="pf-banner-grad" />}
       </div>
 
-      {tab === 'profilo' && (
-        <>
-          {form.banner_url && (
-            <div style={{ height: 120, background: 'var(--surface)', overflow: 'hidden', marginBottom: -32 }}>
-              <img src={form.banner_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            </div>
-          )}
-          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-            <div className="gold-border" style={{ width: 84, height: 84, overflow: 'hidden', background: 'var(--surface)' }}>
-              {form.avatar_url && <img src={form.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-            </div>
+      <div className="page" style={{ paddingTop: 0, marginTop: -44, position: 'relative', zIndex: 2 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, marginBottom: 12 }}>
+          <div className="pf-avatar">
+            {profile.avatar_url ? <img src={profile.avatar_url} alt="" /> : <div className="pf-avatar-ph">{(profile.display_name || profile.username)[0]?.toUpperCase()}</div>}
           </div>
-
-          <form onSubmit={handleSaveProfile}>
-            <div className="grid-2">
-              <div className="field">
-                <label>Username</label>
-                <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value.toLowerCase().replace(/\s/g, '') })} required />
-              </div>
-              <div className="field">
-                <label>Nome visualizzato</label>
-                <input value={form.display_name || ''} onChange={(e) => setForm({ ...form, display_name: e.target.value })} />
-              </div>
-            </div>
-            <div className="field">
-              <label>Bio (max 300 caratteri)</label>
-              <textarea rows={2} maxLength={300} value={form.bio || ''} onChange={(e) => setForm({ ...form, bio: e.target.value })} />
-            </div>
-            <div className="field">
-              <label>Nota profilo (max 500 caratteri)</label>
-              <textarea rows={2} maxLength={500} value={form.note || ''} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-            </div>
-            <div className="grid-2">
-              <div className="field">
-                <label>URL foto profilo</label>
-                <input value={form.avatar_url || ''} onChange={(e) => setForm({ ...form, avatar_url: e.target.value })} placeholder="https://..." />
-              </div>
-              <div className="field">
-                <label>URL banner</label>
-                <input value={form.banner_url || ''} onChange={(e) => setForm({ ...form, banner_url: e.target.value })} placeholder="https://..." />
-              </div>
-            </div>
-
-            <div className="field">
-              <label>Link social</label>
-              <input value={form.social_tvtime || ''} onChange={(e) => setForm({ ...form, social_tvtime: e.target.value })} placeholder="TVTime URL" style={{ marginBottom: 8 }} />
-              <input value={form.social_mal || ''} onChange={(e) => setForm({ ...form, social_mal: e.target.value })} placeholder="MyAnimeList URL" style={{ marginBottom: 8 }} />
-              <input value={form.social_imdb || ''} onChange={(e) => setForm({ ...form, social_imdb: e.target.value })} placeholder="IMDb URL" />
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-              <span style={{ fontSize: 13, fontWeight: 600 }}>Profilo pubblico</span>
-              <button type="button" className={form.is_public ? 'btn' : 'btn secondary'} onClick={() => setForm({ ...form, is_public: !form.is_public })}>
-                {form.is_public ? 'Pubblico' : 'Privato'}
-              </button>
-            </div>
-
-            {profile?.username && (
-              <div style={{ display: 'flex', gap: 8, marginBottom: 20 }}>
-                <div className="card" style={{ flex: 1, padding: 10, fontSize: 12, color: 'var(--subtext)', display: 'flex', alignItems: 'center' }}>
-                  /u/{profile.username}
-                </div>
-                <button type="button" className="btn secondary" onClick={copyPublicLink}>{copied ? 'Copiato!' : 'Copia'}</button>
-              </div>
-            )}
-
-            <button className="btn block" type="submit" disabled={saving}>{saving ? 'Salvataggio...' : 'Salva profilo'}</button>
-          </form>
-
-          <h2 className="section-title" style={{ marginTop: 32 }}>Serie preferite ({favorites.length}/6)</h2>
-          <div className="grid-3x2" style={{ marginBottom: 12 }}>
-            {favorites.map(f => (
-              <div key={f.id} className="card" style={{ position: 'relative' }}>
-                <div style={{ aspectRatio: '2/3', overflow: 'hidden', background: 'var(--surface-hover)' }}>
-                  {f.poster_path && <img src={posterUrl(f.poster_path)} alt={f.title} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                </div>
-                <button onClick={() => removeFavorite(f.tmdb_id)} style={{ position: 'absolute', top: 4, right: 4, background: 'rgba(30,30,46,0.8)', color: 'var(--red)', width: 22, height: 22, fontSize: 12 }}>✕</button>
-              </div>
-            ))}
-            {Array.from({ length: Math.max(0, 6 - favorites.length) }).map((_, i) => (
-              <div key={i} style={{ aspectRatio: '2/3', border: '1px dashed var(--overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--overlay)', fontSize: 24 }}>+</div>
-            ))}
+          <div style={{ flex: 1, paddingBottom: 4 }}>
+            <h1 style={{ fontSize: 26, lineHeight: 1 }}>{profile.display_name || profile.username}</h1>
+            <div className="muted" style={{ fontSize: 13 }}>@{profile.username}</div>
           </div>
-          {favorites.length < 6 && (
-            <div className="field">
-              <label>Cerca nella tua libreria per aggiungere ai preferiti</label>
-              <input value={favSearch} onChange={(e) => setFavSearch(e.target.value)} placeholder="Titolo serie..." />
-              {filteredLibrary.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-                  {filteredLibrary.map(s => (
-                    <button key={s.tmdb_id} onClick={() => addFavorite(s)} className="card" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: 8, textAlign: 'left' }}>
-                      <span style={{ fontSize: 13, flex: 1 }}>{s.title}</span>
-                      <span style={{ color: 'var(--gold)' }}>+</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+        </div>
 
-          <div style={{ marginTop: 32, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <Link to="/profilo/import" className="btn secondary block" style={{ textAlign: 'center' }}>Importa da TVTime</Link>
-            <button className="btn danger" onClick={signOut}>Esci</button>
+        {profile.bio && <p style={{ fontSize: 14, lineHeight: 1.5, marginBottom: 8 }}>{profile.bio}</p>}
+        {profile.note && <p className="subtext" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 10 }}>{profile.note}</p>}
+
+        {/* Social */}
+        {(profile.social_tvtime || profile.social_mal || profile.social_imdb) && (
+          <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+            {profile.social_tvtime && <a href={profile.social_tvtime} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="tvtime" /></a>}
+            {profile.social_mal && <a href={profile.social_mal} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="mal" /></a>}
+            {profile.social_imdb && <a href={profile.social_imdb} target="_blank" rel="noreferrer" className="soc"><SocialIcon kind="imdb" /></a>}
           </div>
-        </>
-      )}
+        )}
 
-      {tab === 'statistiche' && <StatsCharts stats={stats} variant="full" />}
+        <div style={{ display: 'flex', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-ghost" onClick={() => setEditing(true)}>✎ Modifica profilo</button>
+          <button className={'btn' + (profile.is_public ? ' btn-primary' : '')} onClick={togglePublic}>
+            {profile.is_public ? '🌐 Pubblico' : '🔒 Privato'}
+          </button>
+        </div>
+        {profile.is_public && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
+            <a href={publicUrl} target="_blank" rel="noreferrer" className="muted" style={{ fontSize: 12, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{publicUrl}</a>
+            <button className="chip" onClick={copyLink}>Copia</button>
+          </div>
+        )}
+
+        {/* Tab */}
+        <div style={{ display: 'flex', borderBottom: '1px solid var(--surface1)', margin: '6px 0 14px' }}>
+          <button className={'pf-tab' + (tab === 'profilo' ? ' on' : '')} onClick={() => setTab('profilo')}>Preferite</button>
+          <button className={'pf-tab' + (tab === 'stats' ? ' on' : '')} onClick={() => setTab('stats')}>Statistiche</button>
+        </div>
+
+        {tab === 'profilo' ? (
+          <>
+            <div className="fav-grid">
+              {Array.from({ length: 6 }, (_, i) => {
+                const fav = favs[i]
+                return fav ? (
+                  <div key={fav.tmdb_id} className="fav-cell" onClick={() => nav(`/show/${fav.tmdb_id}`)}>
+                    <Poster path={fav.poster_path} alt={fav.title} width={'100%'} />
+                    <button className="fav-x" onClick={(e) => { e.stopPropagation(); dropFav(fav.tmdb_id) }}>✕</button>
+                  </div>
+                ) : (
+                  <div key={'empty' + i} className="fav-empty">
+                    <span>♦</span>
+                  </div>
+                )
+              })}
+            </div>
+            <p className="muted" style={{ fontSize: 12, marginTop: 10 }}>Tocca la stella su una serie per aggiungerla qui (max 6).</p>
+
+            <div className="divider" />
+            <button className="btn btn-ghost btn-block" onClick={() => nav('/import')} style={{ marginBottom: 10 }}>Importa da TVTime</button>
+            <button className="btn btn-danger btn-block" onClick={signOut}>Esci</button>
+          </>
+        ) : (
+          statsData ? <StatsPanel {...statsData} variant="full" /> : <Loader label="Calcolo statistiche…" />
+        )}
+      </div>
+
+      {/* Edit sheet */}
+      <Sheet open={editing} onClose={() => setEditing(false)} title="Modifica profilo">
+        <label className="lbl">Nome visualizzato</label>
+        <input className="field" value={f.display_name} onChange={e => setF({ ...f, display_name: e.target.value })} maxLength={60} />
+        <label className="lbl">Bio ({(f.bio || '').length}/300)</label>
+        <textarea className="field" rows={3} value={f.bio} onChange={e => setF({ ...f, bio: e.target.value.slice(0, 300) })} />
+        <label className="lbl">Note ({(f.note || '').length}/500)</label>
+        <textarea className="field" rows={3} value={f.note} onChange={e => setF({ ...f, note: e.target.value.slice(0, 500) })} />
+        <label className="lbl">URL immagine profilo</label>
+        <input className="field" value={f.avatar_url} onChange={e => setF({ ...f, avatar_url: e.target.value })} placeholder="https://…" autoCapitalize="none" />
+        <label className="lbl">URL banner</label>
+        <input className="field" value={f.banner_url} onChange={e => setF({ ...f, banner_url: e.target.value })} placeholder="https://…" autoCapitalize="none" />
+        <label className="lbl">Link TVTime</label>
+        <input className="field" value={f.social_tvtime} onChange={e => setF({ ...f, social_tvtime: e.target.value })} placeholder="https://www.tvtime.com/user/…" autoCapitalize="none" />
+        <label className="lbl">Link MyAnimeList</label>
+        <input className="field" value={f.social_mal} onChange={e => setF({ ...f, social_mal: e.target.value })} placeholder="https://myanimelist.net/profile/…" autoCapitalize="none" />
+        <label className="lbl">Link IMDb</label>
+        <input className="field" value={f.social_imdb} onChange={e => setF({ ...f, social_imdb: e.target.value })} placeholder="https://www.imdb.com/user/…" autoCapitalize="none" />
+        <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} disabled={saving} onClick={save}>{saving ? 'Salvo…' : 'Salva'}</button>
+      </Sheet>
+
+      <style>{`
+        .pf-banner { position: relative; overflow: hidden; background: var(--surface0); }
+        .pf-banner img { width: 100%; height: 100%; object-fit: cover; }
+        .pf-banner-grad { width: 100%; height: 100%; background: linear-gradient(120deg, var(--mauve-deep), var(--surface0) 60%, var(--pink)); opacity: .5; }
+        .pf-avatar { width: 88px; height: 88px; flex: 0 0 88px; border: 3px solid var(--gold); overflow: hidden; background: var(--surface1); }
+        .pf-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .pf-avatar-ph { width: 100%; height: 100%; display: grid; place-items: center; font-family: var(--f-display); font-size: 40px; color: var(--mauve); }
+        .soc { width: 40px; height: 40px; display: grid; place-items: center; background: var(--surface0); border: 1px solid var(--surface1); }
+        .pf-tab { flex: 1; padding: 10px; font-weight: 600; font-size: 14px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+        .pf-tab.on { color: var(--mauve); border-bottom-color: var(--mauve); }
+        .fav-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .fav-cell { position: relative; cursor: pointer; }
+        .fav-x { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; background: rgba(17,17,27,.8); color: #fff; font-size: 11px; }
+        .fav-empty { aspect-ratio: 2/3; border: 1px dashed var(--surface1); display: grid; place-items: center; color: var(--surface2); font-size: 24px; }
+      `}</style>
     </div>
   )
 }

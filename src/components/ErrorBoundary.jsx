@@ -5,41 +5,33 @@ export default class ErrorBoundary extends Component {
     super(props)
     this.state = { error: null }
   }
-
   static getDerivedStateFromError(error) {
     return { error }
   }
-
   componentDidCatch(error, info) {
-    console.error('Errore catturato da ErrorBoundary:', error, info)
+    console.error('ErrorBoundary:', error, info)
   }
-
   render() {
     if (this.state.error) {
       return (
-        <div style={{
-          minHeight: '100vh', display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center',
-          background: '#1e1e2e', color: '#cdd6f4', fontFamily: 'Outfit, sans-serif'
-        }}>
-          <h1 style={{ fontFamily: '"Bebas Neue", sans-serif', fontSize: 28, marginBottom: 12, color: '#cba6f7', letterSpacing: '0.02em' }}>
-            QUALCOSA È ANDATO STORTO
-          </h1>
-          <p style={{ fontSize: 13, color: '#a6adc8', marginBottom: 20, maxWidth: 320, lineHeight: 1.5 }}>
-            Si è verificato un errore imprevisto nell'app. Ricarica la pagina per continuare — i dati già salvati non vengono persi.
-          </p>
-          <pre style={{
-            fontSize: 11, color: '#f38ba8', maxWidth: 320, overflow: 'auto', marginBottom: 20,
-            textAlign: 'left', background: '#313244', padding: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word'
-          }}>
-            {String(this.state.error?.message || this.state.error)}
-          </pre>
-          <button
-            onClick={() => window.location.reload()}
-            style={{ background: '#cba6f7', color: '#1e1e2e', border: 'none', padding: '12px 28px', fontWeight: 600, cursor: 'pointer', fontSize: 14 }}
-          >
-            Ricarica
-          </button>
+        <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
+          <div style={{ maxWidth: 460, width: '100%', background: 'var(--surface0)', border: '1px solid var(--surface1)', padding: 22 }}>
+            <div style={{ fontFamily: 'var(--f-display)', fontSize: 30, color: 'var(--red)', letterSpacing: '.04em' }}>
+              Qualcosa si è rotto
+            </div>
+            <p style={{ color: 'var(--subtext)', margin: '10px 0 14px', lineHeight: 1.5 }}>
+              La pagina ha smesso di rispondere. Ecco l'errore esatto (utile per capire cosa è successo):
+            </p>
+            <pre style={{
+              background: 'var(--mantle)', border: '1px solid var(--surface1)', color: 'var(--gold)',
+              padding: 12, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 200, overflow: 'auto',
+            }}>
+              {String(this.state.error?.message || this.state.error)}
+            </pre>
+            <button className="btn btn-primary btn-block" style={{ marginTop: 14 }} onClick={() => window.location.reload()}>
+              Ricarica
+            </button>
+          </div>
         </div>
       )
     }

@@ -1,187 +1,145 @@
 import { useEffect, useState } from 'react'
-import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
-import { EMOTIONS, PLATFORMS, DEVICES, getEpisodeCredits } from '../lib/tmdb'
+import { Sheet } from './ui'
 import StarRating from './StarRating'
-import CastPicker from './CastPicker'
+import CharacterPicker from './CharacterPicker'
+import RatingBadges from './RatingBadges'
+import { EMOTIONS, PLATFORMS, DEVICES } from '../lib/constants'
+import { getEpisodeCredits } from '../lib/tmdb'
+import { imdbEpisodeRating } from '../lib/omdb'
+import { markEpisode, unmarkEpisode, upsertEpisodeDetails } from '../lib/db'
 
-function todayISO() {
-  return new Date().toISOString().slice(0, 10)
-}
+const parseArr = (s) => { try { const v = JSON.parse(s); return Array.isArray(v) ? v : [] } catch { return [] } }
+const today = () => new Date().toISOString().slice(0, 10)
 
-export default function EpisodeSheet({ tmdbShowId, seasonNumber, episode, watched, details, onClose, onSaved }) {
+export default function EpisodeSheet({ open, onClose, show, imdbId, season, episode, watched, detail, onSaved }) {
   const { user } = useAuth()
-  const { showToast } = useToast()
-  const [isWatched, setIsWatched] = useState(!!watched)
-  const [watchedDate, setWatchedDate] = useState(details?.watched_date || todayISO())
-  const [rating, setRating] = useState(details?.rating || 0)
-  const [emotions, setEmotions] = useState(details?.emotions ? JSON.parse(details.emotions) : [])
-  const [favCharacter, setFavCharacter] = useState(details?.fav_character || '')
-  const [platform, setPlatform] = useState(details?.platform || '')
-  const [device, setDevice] = useState(details?.device || '')
-  const [note, setNote] = useState(details?.note || '')
+  const toast = useToast()
+  const [isWatched, setWatched] = useState(watched)
+  const [date, setDate] = useState(detail?.watched_date || today())
+  const [rating, setRating] = useState(detail?.rating || null)
+  const [emotions, setEmotions] = useState(parseArr(detail?.emotions))
+  const [character, setCharacter] = useState(detail?.fav_character || '')
+  const [platform, setPlatform] = useState(detail?.platform || '')
+  const [device, setDevice] = useState(detail?.device || '')
+  const [note, setNote] = useState(detail?.note || '')
   const [cast, setCast] = useState([])
-  const [saving, setSaving] = useState(false)
+  const [imdb, setImdb] = useState(detail?.imdb_rating ?? null)
+  const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    let cancelled = false
-    getEpisodeCredits(tmdbShowId, seasonNumber, episode.episode_number)
-      .then(data => {
-        if (cancelled) return
-        const combined = [...(data.cast || []), ...(data.guest_stars || [])]
-        const unique = Array.from(new Map(combined.map(c => [c.name, c])).values())
-        setCast(unique)
-      })
-      .catch(() => { if (!cancelled) setCast([]) })
-    return () => { cancelled = true }
-  }, [tmdbShowId, seasonNumber, episode.episode_number])
-
-  function toggleEmotion(id) {
-    setEmotions(prev => prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id])
-  }
-
-  function toggleWatchedSwitch() {
-    setIsWatched(prev => !prev)
-  }
-
-  async function handleSave() {
-    if (!user || saving) return
-    setSaving(true)
-    try {
-      // user_episodes: presenza = visto
-      if (isWatched) {
-        const { error: epError } = await supabase.from('user_episodes').upsert({
-          user_id: user.id,
-          tmdb_show_id: tmdbShowId,
-          season_number: seasonNumber,
-          episode_number: episode.episode_number,
-          watched_at: new Date(watchedDate).toISOString()
-        }, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-        if (epError) throw epError
-      } else {
-        const { error: delError } = await supabase.from('user_episodes').delete()
-          .eq('user_id', user.id)
-          .eq('tmdb_show_id', tmdbShowId)
-          .eq('season_number', seasonNumber)
-          .eq('episode_number', episode.episode_number)
-        if (delError) throw delError
-      }
-
-      // episode_details: dettagli sempre salvati se c'è qualcosa da salvare
-      const detailPayload = {
-        user_id: user.id,
-        tmdb_show_id: tmdbShowId,
-        season_number: seasonNumber,
-        episode_number: episode.episode_number,
-        rating: rating || null,
-        emotions: JSON.stringify(emotions),
-        fav_character: favCharacter || null,
-        platform: platform || null,
-        device: device || null,
-        note: note || null,
-        watched_date: isWatched ? watchedDate : (details?.watched_date || null),
-        updated_at: new Date().toISOString()
-      }
-      const { data: savedDetails, error: detailsError } = await supabase
-        .from('episode_details')
-        .upsert(detailPayload, { onConflict: 'user_id,tmdb_show_id,season_number,episode_number' })
-        .select()
-        .maybeSingle()
-      if (detailsError) throw detailsError
-
-      onSaved({ watched: isWatched, details: savedDetails })
-      showToast('Episodio salvato', 'success')
-      onClose()
-    } catch (err) {
-      console.error('Errore salvataggio episodio:', err)
-      showToast(err?.message ? `Errore nel salvataggio: ${err.message}` : 'Errore nel salvataggio. Riprova.', 'error')
-    } finally {
-      setSaving(false)
+    if (!open || !episode) return
+    setWatched(watched)
+    setDate(detail?.watched_date || today())
+    setRating(detail?.rating || null)
+    setEmotions(parseArr(detail?.emotions))
+    setCharacter(detail?.fav_character || '')
+    setPlatform(detail?.platform || '')
+    setDevice(detail?.device || '')
+    setNote(detail?.note || '')
+    setImdb(detail?.imdb_rating ?? null)
+    // cast episodio (guest incluse) -> normalizzato su PERSONAGGIO
+    getEpisodeCredits(show.id, season, episode.episode_number).then(cr => {
+      const all = [...(cr.cast || []), ...(cr.guest_stars || [])]
+      setCast(all.map(c => ({ character: c.character, actor: c.name, profile_path: c.profile_path })))
+    }).catch(() => setCast([]))
+    // voto IMDb episodio (best-effort, non bloccante)
+    if (imdbId && (detail?.imdb_rating == null)) {
+      imdbEpisodeRating(imdbId, season, episode.episode_number).then(r => { if (r != null) setImdb(r) })
     }
+  }, [open, episode?.episode_number, season])
+
+  if (!episode) return null
+
+  const toggleEmotion = (e) => setEmotions(prev => prev.includes(e) ? prev.filter(x => x !== e) : [...prev, e])
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      // stato visto
+      if (isWatched && !watched) await markEpisode(user.id, show.id, season, episode.episode_number, date)
+      if (!isWatched && watched) await unmarkEpisode(user.id, show.id, season, episode.episode_number)
+      if (isWatched && watched && date !== detail?.watched_date) {
+        await markEpisode(user.id, show.id, season, episode.episode_number, date) // aggiorna data
+      }
+      // dettagli
+      await upsertEpisodeDetails({
+        user_id: user.id, tmdb_show_id: show.id, season_number: season, episode_number: episode.episode_number,
+        rating, emotions: JSON.stringify(emotions), fav_character: character || null,
+        platform: platform || null, device: device || null, note: note || null,
+        watched_date: isWatched ? date : null, imdb_rating: imdb,
+      })
+      toast.success('Episodio salvato.')
+      onSaved?.()
+      onClose()
+    } catch (e) {
+      toast.error(e.message) // messaggio VERO di Supabase
+    }
+    setBusy(false)
   }
+
+  const runtime = episode.runtime || show.episode_run_time?.[0]
 
   return (
-    <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <div className="sheet-header">
-          <h3 style={{ fontSize: 18 }}>Ep. {episode.episode_number} — {episode.name}</h3>
-          <button className="sheet-close" onClick={onClose}>✕</button>
-        </div>
-
-        <div style={{ display: 'flex', gap: 12, fontSize: 12, color: 'var(--subtext)', marginBottom: 16 }}>
-          {episode.vote_average > 0 && <span>Voto TMDB: {episode.vote_average.toFixed(1)}</span>}
-          {episode.runtime && <span>Durata: {episode.runtime}min</span>}
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
-          <span style={{ fontWeight: 600 }}>Visto</span>
-          <button
-            onClick={toggleWatchedSwitch}
-            className={isWatched ? 'btn' : 'btn secondary'}
-          >
-            {isWatched ? '✓ Visto' : 'Segna come visto'}
-          </button>
-        </div>
-
-        {isWatched && (
-          <div className="field">
-            <label>Data visione</label>
-            <input type="date" value={watchedDate} onChange={(e) => setWatchedDate(e.target.value)} />
-          </div>
-        )}
-
-        <div className="field">
-          <label>Voto episodio</label>
-          <StarRating value={rating} max={5} onChange={setRating} />
-        </div>
-
-        <div className="field">
-          <label>Emozioni</label>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {EMOTIONS.map(e => (
-              <button
-                key={e.id}
-                onClick={() => toggleEmotion(e.id)}
-                className={`chip ${emotions.includes(e.id) ? 'active' : ''}`}
-              >
-                {e.emoji} {e.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Personaggio preferito</label>
-          <CastPicker cast={cast} value={favCharacter} onChange={setFavCharacter} />
-        </div>
-
-        <div className="grid-2">
-          <div className="field">
-            <label>Piattaforma</label>
-            <select value={platform} onChange={(e) => setPlatform(e.target.value)}>
-              <option value="">—</option>
-              {PLATFORMS.map(p => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </div>
-          <div className="field">
-            <label>Dispositivo</label>
-            <select value={device} onChange={(e) => setDevice(e.target.value)}>
-              <option value="">—</option>
-              {DEVICES.map(d => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </div>
-        </div>
-
-        <div className="field">
-          <label>Nota</label>
-          <textarea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Scrivi una nota..." />
-        </div>
-
-        <button className="btn block" onClick={handleSave} disabled={saving}>
-          {saving ? 'Salvataggio...' : 'Salva'}
-        </button>
+    <Sheet open={open} onClose={onClose} title={`S${season}·E${episode.episode_number}`}>
+      <div style={{ marginBottom: 4, fontWeight: 700, fontSize: 16 }}>{episode.name}</div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
+        <RatingBadges tmdb={episode.vote_average} imdb={imdb} size="sm" />
+        {runtime ? <span className="muted" style={{ fontSize: 12 }}>~{runtime}min</span> : null}
       </div>
-    </div>
+
+      <button className={'chip btn-block' + (isWatched ? ' on' : '')} style={{ justifyContent: 'center', padding: 12 }} onClick={() => setWatched(w => !w)}>
+        {isWatched ? '✓ Visto' : 'Segna come visto'}
+      </button>
+
+      {isWatched && (
+        <>
+          <label className="lbl">Data di visione</label>
+          <input className="field" type="date" value={date} onChange={e => setDate(e.target.value)} />
+        </>
+      )}
+
+      <label className="lbl">Il tuo voto</label>
+      <StarRating value={rating} onChange={setRating} half size={32} />
+
+      <label className="lbl">Emozioni</label>
+      <div className="emo-grid">
+        {EMOTIONS.map(({ e, label }) => (
+          <button key={e} className={'emo' + (emotions.includes(e) ? ' on' : '')} onClick={() => toggleEmotion(e)}>
+            <span className="emo-e">{e}</span><span className="emo-l">{label}</span>
+          </button>
+        ))}
+      </div>
+
+      <label className="lbl">Personaggio preferito (episodio)</label>
+      <CharacterPicker cast={cast} value={character} onChange={setCharacter} />
+
+      <label className="lbl">Piattaforma</label>
+      <div className="chip-row" style={{ flexWrap: 'wrap' }}>
+        {PLATFORMS.map(p => <button key={p} className={'chip' + (platform === p ? ' on' : '')} onClick={() => setPlatform(platform === p ? '' : p)}>{p}</button>)}
+      </div>
+
+      <label className="lbl">Dispositivo</label>
+      <div className="chip-row">
+        {DEVICES.map(d => <button key={d} className={'chip' + (device === d ? ' on' : '')} onClick={() => setDevice(device === d ? '' : d)}>{d}</button>)}
+      </div>
+
+      <label className="lbl">Nota</label>
+      <textarea className="field" rows={3} value={note} onChange={e => setNote(e.target.value)} placeholder="Pensieri sull'episodio…" />
+
+      <button className="btn btn-primary btn-block" style={{ marginTop: 18 }} disabled={busy} onClick={save}>
+        {busy ? 'Salvo…' : 'Salva episodio'}
+      </button>
+
+      <style>{`
+        .emo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+        .emo { display: flex; align-items: center; gap: 6px; padding: 8px; background: var(--surface0); border: 1px solid transparent; font-size: 12px; }
+        .emo.on { border-color: var(--mauve); background: rgba(203,166,247,.14); }
+        .emo-e { font-size: 16px; }
+        .emo-l { color: var(--subtext); }
+        .emo.on .emo-l { color: var(--mauve); }
+      `}</style>
+    </Sheet>
   )
 }

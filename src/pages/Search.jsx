@@ -1,116 +1,72 @@
-import { useEffect, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { searchTv, discoverByGenre, getGenres, posterUrl } from '../lib/tmdb'
-import Spinner from '../components/Spinner'
+import { useEffect, useState, useRef } from 'react'
+import { useAuth } from '../context/AuthContext'
+import { useToast } from '../context/ToastContext'
+import { searchTv, discoverByGenre } from '../lib/tmdb'
+import { listShows } from '../lib/db'
+import { GENRES, GENRE_TMDB_ID } from '../lib/constants'
+import { ResultCard } from '../components/cards'
+import { Loader, Empty } from '../components/ui'
 
 export default function Search() {
-  const [query, setQuery] = useState('')
-  const [genres, setGenres] = useState([])
-  const [activeGenre, setActiveGenre] = useState(null)
+  const { user } = useAuth()
+  const toast = useToast()
+  const [q, setQ] = useState('')
   const [results, setResults] = useState([])
+  const [genre, setGenre] = useState(null)
   const [loading, setLoading] = useState(false)
-  const debounceRef = useRef(null)
+  const [libIds, setLibIds] = useState(new Set())
+  const debounce = useRef(null)
 
+  useEffect(() => { listShows(user.id).then(s => setLibIds(new Set(s.map(x => x.tmdb_id)))).catch(() => {}) }, [user.id])
+
+  // ricerca testuale con debounce 380ms
   useEffect(() => {
-    getGenres().then(data => setGenres(data.genres || [])).catch(() => setGenres([]))
-  }, [])
-
-  useEffect(() => {
-    clearTimeout(debounceRef.current)
-    if (!query.trim()) {
-      if (!activeGenre) setResults([])
-      return
-    }
-    setLoading(true)
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const data = await searchTv(query.trim())
-        setResults(data.results || [])
-      } catch {
-        setResults([])
-      } finally {
-        setLoading(false)
-      }
-    }, 380)
-    return () => clearTimeout(debounceRef.current)
-  }, [query])
-
-  async function handleGenreClick(genre) {
-    if (activeGenre?.id === genre.id) {
-      setActiveGenre(null)
-      if (!query.trim()) setResults([])
-      return
-    }
-    setActiveGenre(genre)
-    setQuery('')
-    setLoading(true)
-    try {
-      const data = await discoverByGenre(genre.id)
-      setResults(data.results || [])
-    } catch {
-      setResults([])
-    } finally {
+    clearTimeout(debounce.current)
+    if (!q.trim()) { if (!genre) setResults([]); return }
+    setGenre(null)
+    debounce.current = setTimeout(async () => {
+      setLoading(true)
+      try { setResults(await searchTv(q.trim())) }
+      catch (e) { toast.error(e.message) }
       setLoading(false)
-    }
+    }, 380)
+    return () => clearTimeout(debounce.current)
+  }, [q])
+
+  // chip genere: discover, NON inietta testo nel campo
+  const pickGenre = async (g) => {
+    if (genre === g) { setGenre(null); setResults([]); return }
+    setGenre(g); setQ(''); setLoading(true)
+    try { setResults(await discoverByGenre(GENRE_TMDB_ID[g])) }
+    catch (e) { toast.error(e.message) }
+    setLoading(false)
   }
 
   return (
-    <div className="page">
-      <div className="eyebrow">MyTrackList</div>
-      <h1 style={{ fontSize: 30, marginBottom: 16 }}>Cerca</h1>
-
-      <div className="field">
-        <input
-          type="text"
-          placeholder="Cerca una serie, anime o cartone..."
-          value={query}
-          onChange={(e) => { setQuery(e.target.value); setActiveGenre(null) }}
-        />
+    <div className="page page-pad-top">
+      <h1 className="section-title" style={{ fontSize: 30 }}>Cerca</h1>
+      <div style={{ position: 'relative', marginBottom: 12 }}>
+        <input className="field" value={q} onChange={e => setQ(e.target.value)} placeholder="Titolo serie, anime, cartone…" autoCapitalize="none" style={{ paddingLeft: 38 }} />
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="var(--muted)" style={{ position: 'absolute', left: 12, top: 13 }}>
+          <path d="M10 3a7 7 0 1 0 4.2 12.6l4.1 4.1 1.4-1.4-4.1-4.1A7 7 0 0 0 10 3zm0 2a5 5 0 1 1 0 10 5 5 0 0 1 0-10z" />
+        </svg>
       </div>
 
-      <div className="chip-row" style={{ marginBottom: 20 }}>
-        {genres.map(g => (
-          <button
-            key={g.id}
-            className={`chip ${activeGenre?.id === g.id ? 'active' : ''}`}
-            onClick={() => handleGenreClick(g)}
-          >
-            {g.name}
-          </button>
+      <div className="chip-row" style={{ marginBottom: 16 }}>
+        {GENRES.map(g => (
+          <button key={g} className={'chip' + (genre === g ? ' on' : '')} onClick={() => pickGenre(g)}>{g}</button>
         ))}
       </div>
 
-      {loading && <Spinner label="Ricerca..." />}
+      {loading ? <Loader /> :
+        results.length > 0 ? (
+          <div className="grid-3">
+            {results.map(r => <ResultCard key={r.id} item={r} inLibrary={libIds.has(r.id)} />)}
+          </div>
+        ) : (q || genre) ? <Empty title="Nessun risultato">Prova un altro titolo o genere.</Empty>
+          : <Empty title="Cerca qualcosa">Digita un titolo o tocca un genere.</Empty>}
 
-      {!loading && results.length === 0 && (query.trim() || activeGenre) && (
-        <div className="empty-state">
-          <h3>Nessun risultato</h3>
-          <p>Prova con un altro titolo o genere.</p>
-        </div>
-      )}
-
-      {!loading && results.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {results.map(r => (
-            <Link key={r.id} to={`/serie/${r.id}`} className="card" style={{ display: 'flex', gap: 12, padding: 10 }}>
-              <div style={{ width: 64, aspectRatio: '2/3', background: 'var(--surface-hover)', overflow: 'hidden', flexShrink: 0 }}>
-                {r.poster_path && (
-                  <img src={posterUrl(r.poster_path, 'w154')} alt={r.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
-                )}
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{r.name}</div>
-                <div style={{ fontSize: 11, color: 'var(--subtext)', marginBottom: 4 }}>
-                  {r.first_air_date?.slice(0, 4) || '—'} · {r.origin_country?.join(', ') || '—'} · TMDB {r.vote_average?.toFixed(1) ?? '—'}
-                </div>
-                <p style={{ fontSize: 12, color: 'var(--subtext)', overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                  {r.overview || 'Nessuna sinossi disponibile.'}
-                </p>
-              </div>
-            </Link>
-          ))}
-        </div>
-      )}
+      <style>{`.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }`}</style>
     </div>
   )
 }

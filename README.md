@@ -1,104 +1,53 @@
-# TVTrack
+# MyTrackList
 
-App personale per il tracking di serie TV, anime e cartoni.  
-PWA installabile su Android, con sync cloud tramite Supabase.
+Tracker personale di serie TV, anime e cartoni. PWA mobile-first.
+Stack: React + Vite + React Router · Supabase · TMDB · OMDb (voti IMDb) · Jikan (voti MyAnimeList) · Cloudflare Pages.
 
----
-
-## Stack
-
-| Layer    | Tecnologia |
-|----------|-----------|
-| Frontend | React 18 + Vite + React Router |
-| Dati show | TMDB API (gratuita) |
-| Backend/Auth | Supabase (gratuito) |
-| Hosting | Vercel (gratuito) |
+Voti mostrati: **TMDB + IMDb + MAL** (MAL solo sugli anime).
 
 ---
 
-## Setup — 5 passaggi
+## 1. Supabase (una volta sola)
 
-### 1. TMDB API Key
-1. Vai su https://www.themoviedb.org e crea un account gratuito
-2. Vai in *Impostazioni → API* e richiedi una chiave (scegli "Developer")
-3. Copia la **API Key (v3 auth)**
+1. Apri il progetto Supabase → **SQL Editor** → incolla tutto il contenuto di `schema.sql` → **Run**.
+   Lo script fa **DROP + CREATE da zero**, imposta le RLS e le policy pubbliche, e lancia `notify pgrst, 'reload schema'` alla fine.
+2. **Authentication → Providers → Email**: disattiva **Confirm email** (così registrandosi si entra subito).
+3. Prendi da **Project Settings → API**: `Project URL` e `anon public key`.
 
-### 2. Supabase
-1. Crea un account gratuito su https://supabase.com
-2. Crea un nuovo progetto
-3. Vai in *SQL Editor* e incolla l'intero contenuto di `supabase-schema.sql`, poi clicca *Run*
-4. Vai in *Project Settings → API* e copia:
-   - **Project URL**
-   - **anon public key**
-5. (Facoltativo ma consigliato) In *Authentication → Email Templates*, personalizza le email
+## 2. Variabili d'ambiente
 
-### 3. Configura le variabili d'ambiente
-```bash
-cp .env.example .env
+Copia `.env.example` in `.env` e riempi:
+
 ```
-Apri `.env` e compila i tre valori con quelli copiati sopra.
+VITE_SUPABASE_URL=...
+VITE_SUPABASE_ANON_KEY=...
+VITE_TMDB_API_KEY=...      # themoviedb.org/settings/api (v3 "API Key")
+VITE_OMDB_API_KEY=...      # omdbapi.com/apikey.aspx (free, 1000/giorno)
+```
 
-### 4. Installa e testa in locale
-```bash
+Jikan (MAL) non richiede chiave.
+
+## 3. Sviluppo locale
+
+```
 npm install
 npm run dev
 ```
-Apri http://localhost:5173 nel browser.
 
-### 5. Deploy su Vercel
-1. Crea un account gratuito su https://vercel.com
-2. Importa il progetto da GitHub (o usa `vercel` CLI)
-3. In *Project Settings → Environment Variables*, aggiungi le stesse 3 variabili di `.env`
-4. Deploy fatto! Vercel ti darà un URL HTTPS (necessario per la PWA)
+## 4. Deploy su Cloudflare Pages
 
-### Installare come app su Android
-1. Apri l'URL di Vercel in Chrome su Android
-2. Menu (⋮) → *Aggiungi a schermata Home*
-3. Conferma — si installa come app nativa
+- **Push su GitHub** sovrascrivendo i file vecchi con questi.
+- Su Cloudflare Pages, il progetto è già collegato al repo. Verifica le impostazioni di build:
+  - Build command: `npm run build`
+  - Output directory: `dist`
+- In **Settings → Environment variables** imposta le 4 variabili `VITE_*` qui sopra (Production e Preview).
+- Il file `public/_redirects` gestisce il routing SPA (link diretti come `/u/username` e `/show/123` funzionano anche al refresh).
 
 ---
 
-## Struttura del progetto
+## Note
 
-```
-src/
-├── lib/
-│   ├── supabase.js      # Client Supabase
-│   └── tmdb.js          # Helper TMDB API
-├── contexts/
-│   └── AuthContext.jsx  # Gestione autenticazione
-├── components/
-│   ├── Layout.jsx       # Nav bottom + outlet
-│   └── ShowCard.jsx     # Card serie in lista
-├── pages/
-│   ├── Auth.jsx         # Login / Registrazione
-│   ├── Home.jsx         # Dashboard + Trending
-│   ├── Search.jsx       # Ricerca TMDB
-│   ├── Library.jsx      # Libreria per stato
-│   ├── ShowDetail.jsx   # Dettaglio + episodi + note
-│   └── Stats.jsx        # Statistiche personali
-└── index.css            # Design system completo
-```
-
----
-
-## Funzionalità
-
-- 🔍 **Ricerca** serie TV, anime e cartoni via TMDB
-- 📺 **Tracking episodi** — marca episodi singoli o intera stagione con un tap
-- 📚 **Libreria** per stato: In corso / Da vedere / Completate / In pausa / Abbandonate
-- 🏷️ **Tipo** personalizzato per ogni serie (TV / Anime / Cartone)
-- ⭐ **Voto** da 1 a 10
-- 📝 **Note personali** per ogni serie
-- 📊 **Statistiche** — ore totali, giorni, episodi questo mese, top rated
-- 🔄 **Sync** multi-dispositivo tramite Supabase
-- 📱 **PWA** — installabile su Android come app nativa
-- 🌐 **Italiano** — UI e risultati TMDB in italiano
-
----
-
-## Note tecniche
-
-- I dati TMDB (titolo, poster, episodi) vengono cachati su Supabase al momento dell'aggiunta, per ridurre le chiamate API
-- La RLS (Row Level Security) di Supabase garantisce che ogni utente veda solo i propri dati
-- Il piano gratuito Supabase (500 MB DB + 2 GB bandwidth) è più che sufficiente per uso personale
+- **Voti IMDb/MAL**: recuperati in modo best-effort quando aggiungi/apri una serie. Se OMDb/Jikan non rispondono, l'app continua a funzionare (nessun blocco).
+- **Rewatch**: vive solo a livello di **stagione** (bottone nell'accordion). Il moltiplicatore ore è `1 + rivisioni`. La barra di progresso resta un conteggio semplice.
+- **Import TVTime**: carica lo ZIP dell'export GDPR o il file `tracking-prod-records-v2.csv`. La **mappatura colonne è modificabile** nella pagina di import, quindi si adatta al formato reale. Importabili: serie, episodi visti, date, stato. Non importabili (non presenti nell'export TVTime): emozioni, personaggi preferiti, reazioni.
+- Tutte le tabelle hanno RLS: ognuno vede solo i propri dati; i profili impostati come **pubblici** espongono in sola lettura shows, episodi, stagioni e preferite per la pagina `/u/username`.

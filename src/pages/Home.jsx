@@ -1,105 +1,114 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { supabase } from '../lib/supabase'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
-import { getTrending, posterUrl } from '../lib/tmdb'
-import ShowCard from '../components/ShowCard'
-import Spinner from '../components/Spinner'
+import { useToast } from '../context/ToastContext'
+import { listShows } from '../lib/db'
+import { trendingTv } from '../lib/tmdb'
+import { supabase } from '../lib/supabase'
+import { Poster, Loader } from '../components/ui'
+import { ResultCard } from '../components/cards'
 
 export default function Home() {
-  const { user } = useAuth()
-  const [watching, setWatching] = useState([])
-  const [episodeCounts, setEpisodeCounts] = useState({})
-  const [trending, setTrending] = useState([])
-  const [libraryIds, setLibraryIds] = useState(new Set())
+  const { user, profile } = useAuth()
+  const toast = useToast()
+  const nav = useNavigate()
   const [loading, setLoading] = useState(true)
+  const [inProgress, setInProgress] = useState([])
+  const [progressMap, setProgressMap] = useState({})
+  const [trending, setTrending] = useState([])
+  const [libIds, setLibIds] = useState(new Set())
 
   useEffect(() => {
-    if (!user) return
-    let cancelled = false
+    let on = true
+    ;(async () => {
+      try {
+        const shows = await listShows(user.id)
+        if (!on) return
+        setLibIds(new Set(shows.map(s => s.tmdb_id)))
+        const active = shows.filter(s => s.status === 'in_corso').slice(0, 12)
+        setInProgress(active)
 
-    async function load() {
-      setLoading(true)
-      const [showsRes, allShowsRes, trendingRes] = await Promise.all([
-        supabase.from('user_shows').select('*').eq('user_id', user.id).eq('status', 'watching').order('updated_at', { ascending: false }).limit(12),
-        supabase.from('user_shows').select('tmdb_id').eq('user_id', user.id),
-        getTrending().catch(() => ({ results: [] }))
-      ])
-      if (cancelled) return
-
-      const showsList = showsRes.data || []
-      setWatching(showsList)
-      setLibraryIds(new Set((allShowsRes.data || []).map(s => s.tmdb_id)))
-      setTrending(trendingRes.results?.slice(0, 12) || [])
-
-      if (showsList.length > 0) {
-        const { data: episodes } = await supabase
-          .from('user_episodes')
-          .select('tmdb_show_id')
-          .eq('user_id', user.id)
-          .in('tmdb_show_id', showsList.map(s => s.tmdb_id))
-        const counts = {}
-        ;(episodes || []).forEach(e => { counts[e.tmdb_show_id] = (counts[e.tmdb_show_id] || 0) + 1 })
-        if (!cancelled) setEpisodeCounts(counts)
+        // progresso per le serie in corso
+        const { data: eps } = await supabase.from('user_episodes')
+          .select('tmdb_show_id').eq('user_id', user.id)
+          .in('tmdb_show_id', active.map(s => s.tmdb_id).length ? active.map(s => s.tmdb_id) : [-1])
+        const cnt = {}
+        for (const e of (eps || [])) cnt[e.tmdb_show_id] = (cnt[e.tmdb_show_id] || 0) + 1
+        setProgressMap(cnt)
+      } catch (e) {
+        toast.error(e.message)
       }
-      if (!cancelled) setLoading(false)
-    }
-    load()
-    return () => { cancelled = true }
-  }, [user])
+      try {
+        const t = await trendingTv()
+        if (on) setTrending(t.slice(0, 12))
+      } catch (e) { /* trending non critico */ }
+      if (on) setLoading(false)
+    })()
+    return () => { on = false }
+  }, [user.id])
 
-  if (loading) return <Spinner label="Caricamento..." />
+  if (loading) return <Loader />
 
   return (
-    <div className="page">
-      <div style={{ marginBottom: 28 }}>
-        <h1 style={{ fontSize: 52, lineHeight: 0.92, letterSpacing: '0.01em' }}>
-          MY<span style={{ color: 'var(--mauve)' }}>TRACK</span>LIST
-        </h1>
-        <div style={{ height: 3, width: 64, background: 'var(--gold)', marginTop: 10 }} />
-        <p style={{ fontSize: 12, color: 'var(--subtext)', marginTop: 10, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
-          Serie, anime e cartoni — tutto tracciato
-        </p>
-      </div>
+    <div className="page page-pad-top">
+      <header style={{ marginBottom: 18 }}>
+        <div style={{ fontFamily: 'var(--f-display)', fontSize: 46, lineHeight: .9, letterSpacing: '.03em',
+          background: 'var(--grad-word)', WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent' }}>
+          MYTRACKLIST
+        </div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 2 }}>Ciao {profile.display_name || profile.username}, cosa hai guardato?</p>
+      </header>
 
-      <section style={{ marginBottom: 32 }}>
-        <h2 className="section-title">In corso</h2>
-        {watching.length === 0 ? (
-          <div className="empty-state">
-            <h3>Nessuna serie in corso</h3>
-            <p>Cerca una serie e aggiungila alla tua libreria per iniziare a tracciarla.</p>
+      <section>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
+          <h2 className="section-title">In corso</h2>
+          {inProgress.length > 0 && <button className="chip" onClick={() => nav('/libreria')}>Vedi tutto</button>}
+        </div>
+        {inProgress.length === 0 ? (
+          <div className="card" style={{ padding: 18, textAlign: 'center' }}>
+            <p className="subtext" style={{ marginBottom: 10 }}>Nessuna serie in corso. Aggiungine una dalla ricerca.</p>
+            <button className="btn btn-primary" onClick={() => nav('/cerca')}>Cerca serie</button>
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-            {watching.map(show => (
-              <ShowCard key={show.id} show={show} watchedEpisodes={episodeCounts[show.tmdb_id] || 0} />
-            ))}
+          <div className="progress-strip">
+            {inProgress.map(s => {
+              const w = progressMap[s.tmdb_id] || 0
+              const pct = s.total_episodes ? Math.min(100, Math.round((w / s.total_episodes) * 100)) : 0
+              return (
+                <div key={s.tmdb_id} className="ps-card" onClick={() => nav(`/show/${s.tmdb_id}`)}>
+                  <div className="ps-poster">
+                    <Poster path={s.poster_path} alt={s.title} width={'100%'} />
+                    <div className="ps-grad" />
+                  </div>
+                  <div className="ps-title">{s.title}</div>
+                  <div className="prog" style={{ marginTop: 4 }}><i style={{ width: pct + '%' }} /></div>
+                  <div className="muted tabular" style={{ fontSize: 10, marginTop: 3 }}>{w}/{s.total_episodes || '?'}</div>
+                </div>
+              )
+            })}
           </div>
         )}
       </section>
 
-      <section>
-        <h2 className="section-title">Di tendenza questa settimana</h2>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-          {trending.map(t => (
-            <Link key={t.id} to={`/serie/${t.id}`} className="card" style={{ display: 'block' }}>
-              <div style={{ aspectRatio: '2/3', background: 'var(--surface-hover)', overflow: 'hidden', position: 'relative' }}>
-                {t.poster_path ? (
-                  <img src={posterUrl(t.poster_path)} alt={t.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
-                ) : (
-                  <div style={{ padding: 8, fontSize: 11, color: 'var(--subtext)' }}>{t.name}</div>
-                )}
-                {libraryIds.has(t.id) && (
-                  <span className="badge gold" style={{ position: 'absolute', top: 6, left: 6 }}>In libreria</span>
-                )}
-              </div>
-              <div style={{ padding: 8, fontSize: 12, fontWeight: 600, overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>
-                {t.name}
-              </div>
-            </Link>
-          ))}
-        </div>
+      <section style={{ marginTop: 22 }}>
+        <h2 className="section-title">Di tendenza</h2>
+        {trending.length === 0 ? <p className="muted">Non riesco a caricare i trend ora.</p> : (
+          <div className="grid-3">
+            {trending.map(t => <ResultCard key={t.id} item={t} inLibrary={libIds.has(t.id)} />)}
+          </div>
+        )}
       </section>
+
+      <style>{`
+        .progress-strip { display: flex; gap: 12px; overflow-x: auto; padding-bottom: 6px; scrollbar-width: none; }
+        .progress-strip::-webkit-scrollbar { display: none; }
+        .ps-card { flex: 0 0 116px; cursor: pointer; }
+        .ps-poster { position: relative; }
+        .ps-grad { position: absolute; inset: 0; background: linear-gradient(180deg, transparent 55%, rgba(203,166,247,.28)); pointer-events: none; }
+        .ps-title { font-size: 12px; font-weight: 600; margin-top: 6px; line-height: 1.15;
+          display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+        .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+      `}</style>
     </div>
   )
 }
