@@ -12,6 +12,8 @@ import Library from './pages/Library'
 import Lists from './pages/Lists'
 import Profile from './pages/Profile'
 import PublicProfile from './pages/PublicProfile'
+import ShowDetail from './pages/ShowDetail'
+import ImportPage from './pages/ImportPage'
 
 function Splash() {
   return (
@@ -91,6 +93,8 @@ export default function App() {
                 <Route path="/libreria" element={<Library />} />
                 <Route path="/liste" element={<Lists />} />
                 <Route path="/profilo" element={<Profile />} />
+                <Route path="/serie/:id" element={<ShowDetail />} />
+                <Route path="/import" element={<ImportPage />} />
               </Route>
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
