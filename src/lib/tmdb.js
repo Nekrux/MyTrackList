@@ -22,9 +22,11 @@ async function get(path, params = {}) {
 
 export const tmdb = {
   trending: () => get('/trending/tv/week'),
+  findByTvdb: (tvdbId) => get(`/find/${tvdbId}`, { external_source: 'tvdb_id' }),
   search: (q) => get('/search/tv', { query: q, include_adult: 'false' }),
   discover: (genreId) => get('/discover/tv', { with_genres: String(genreId), sort_by: 'popularity.desc' }),
   show: (id) => get(`/tv/${id}`, { append_to_response: 'external_ids,aggregate_credits' }),
+  showLite: (id) => get(`/tv/${id}`, { append_to_response: 'external_ids' }),
   season: (id, n) => get(`/tv/${id}/season/${n}`),
   episodeCredits: (id, s, e) => get(`/tv/${id}/season/${s}/episode/${e}/credits`),
   episodeExternalIds: (id, s, e) => get(`/tv/${id}/season/${s}/episode/${e}/external_ids`),
